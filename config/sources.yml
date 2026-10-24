@@ -1,0 +1,16 @@
+# Add or disable sources here; no code change is required. Confirm each feed's terms of use.
+sources:
+  - id: bbc-world
+    name: BBC News — World
+    feed_url: https://feeds.bbci.co.uk/news/world/rss.xml
+    country: GB
+    category: world
+    extract_full_text: true
+    enabled: true
+  - id: bbc-technology
+    name: BBC News — Technology
+    feed_url: https://feeds.bbci.co.uk/news/technology/rss.xml
+    country: GB
+    category: technology
+    extract_full_text: true
+    enabled: true

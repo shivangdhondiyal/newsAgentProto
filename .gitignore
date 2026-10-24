@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+data/
+logs/*.log
+assets/generated/
+assets/published/
+.pytest-tmp/
+models/*
+!models/.gitkeep

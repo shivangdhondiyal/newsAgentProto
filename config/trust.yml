@@ -1,0 +1,21 @@
+# Editorial policy, not a declaration of factual truth. Review it regularly.
+default_trust_weight: 0.35
+sources:
+  - source_id: bbc-world
+    trust_weight: 0.90
+    domains: [bbc.com, bbc.co.uk]
+  - source_id: bbc-technology
+    trust_weight: 0.90
+    domains: [bbc.com, bbc.co.uk]
+  - source_id: reuters
+    trust_weight: 0.95
+    domains: [reuters.com]
+  - source_id: associated-press
+    trust_weight: 0.95
+    domains: [apnews.com]
+  - source_id: npr
+    trust_weight: 0.85
+    domains: [npr.org]
+  - source_id: official-government
+    trust_weight: 0.95
+    domains: [gov.uk, .gov]

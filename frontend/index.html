@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>News Automation Studio</title>
+    <link rel="stylesheet" href="/dashboard/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">N</span>
+          <div>
+            <strong>News Automation</strong>
+            <small>Editorial control room</small>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Main">
+          <button class="nav-item active" data-view="queue">
+            <span>Review queue</span><span class="pill" id="nav-pending">0</span>
+          </button>
+          <button class="nav-item" data-view="runs">Agent runs</button>
+          <button class="nav-item" data-view="publishing">Publishing</button>
+          <button class="nav-item" data-view="articles">Articles</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="status-line"><span class="dot" id="system-dot"></span><span id="system-status">Connecting…</span></div>
+          <p id="system-capabilities" class="capability-note"></p>
+          <p>Approval is required before any publishing action. Every render is tied to an immutable artifact hash.</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="view-eyebrow">Editorial desk</p>
+            <h1 id="view-title">Review queue</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="button ghost" id="refresh-button">Refresh</button>
+            <button class="button" id="pipeline-button">Advance pipeline</button>
+          </div>
+        </header>
+
+        <section id="view-queue" class="view">
+          <div class="stat-grid" id="review-stats"></div>
+          <div class="queue-layout">
+            <div class="panel queue-panel">
+              <div class="panel-head">
+                <h2>Rendered drafts</h2>
+                <select id="queue-filter" class="input compact" aria-label="Filter by review status">
+                  <option value="">All statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="changes_requested">Changes requested</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              <div id="review-list" class="review-list" aria-live="polite"></div>
+            </div>
+            <article class="panel detail-panel" id="review-detail">
+              <div class="empty-state">
+                <div class="empty-glyph">◎</div>
+                <h2>Select a draft</h2>
+                <p>Inspect sources, claims, script, scenes, and quality gates before approving or rejecting.</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-runs" class="view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Run a workflow stage</h2>
+              <span class="muted">Manual triggers are safe to repeat; completed stages are skipped.</span>
+            </div>
+            <div class="run-actions" id="run-actions"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Recent agent runs</h2></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Stage</th><th>Status</th><th>Seen</th><th>Created</th><th>Updated</th><th>Started</th><th>Errors / warnings</th></tr></thead>
+                <tbody id="runs-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-publishing" class="view" hidden>
+          <div class="stat-grid" id="publishing-stats"></div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Publishing records</h2>
+              <button class="button" id="run-publishing-button">Process queue</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Title</th><th>Platform</th><th>Status</th><th>Attempts</th><th>External result</th><th>Updated</th><th></th></tr></thead>
+                <tbody id="publishing-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-articles" class="view" hidden>
+          <div class="panel">
+            <div class="panel-head"><h2>Collected articles</h2><span class="muted">Source evidence is never deleted.</span></div>
+            <div id="articles-list" class="article-grid"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>
