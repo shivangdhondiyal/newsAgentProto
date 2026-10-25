@@ -14,3 +14,31 @@ sources:
     category: technology
     extract_full_text: true
     enabled: true
+  - id: guardian-world
+    name: The Guardian — World
+    feed_url: https://www.theguardian.com/world/rss
+    country: GB
+    category: world
+    extract_full_text: true
+    enabled: true
+  - id: npr-world
+    name: NPR — World
+    feed_url: https://feeds.npr.org/1004/rss.xml
+    country: US
+    category: world
+    extract_full_text: true
+    enabled: true
+  - id: france24
+    name: France 24 — World
+    feed_url: https://www.france24.com/en/rss
+    country: FR
+    category: world
+    extract_full_text: true
+    enabled: true
+  - id: cbc-world
+    name: CBC News — World
+    feed_url: https://www.cbc.ca/webfeed/rss/rss-world
+    country: CA
+    category: world
+    extract_full_text: true
+    enabled: true

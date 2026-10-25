@@ -23,3 +23,8 @@ Each render is deliberately created in `draft` status. The video agent also crea
 
 - `POST /api/v1/video-generator/runs` renders eligible local drafts.
 - `GET /api/v1/narrations/{narration_id}/video` returns the MP4, subtitle, and timeline artifact metadata.
+
+## Verification
+
+- `tests/test_video_generator.py` covers subtitle timing, timeline output, draft status, and pending approval creation with a fake renderer.
+- A real local smoke run on 2026-10-25 used FFmpeg 9.0.2 and produced a 180 KB, 1920x1080, 14.49-second MP4 with H.264 video, AAC audio, and a `mov_text` subtitle stream. The artifact passed the approval quality gate and exported locally with a matching SHA-256.

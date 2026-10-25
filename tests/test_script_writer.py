@@ -15,7 +15,13 @@ from backend.app.db.models import (
 )
 
 
-async def _create_eligible_article(session, *, source_count: int) -> Article:
+async def _create_eligible_article(
+    session,
+    *,
+    source_count: int,
+    key_facts: list[str] | None = None,
+    context: list[str] | None = None,
+) -> Article:
     article = Article(
         source_id="bbc-world",
         source_name="BBC News",
@@ -42,8 +48,14 @@ async def _create_eligible_article(session, *, source_count: int) -> Article:
             article_id=article.id,
             status="completed",
             headline=article.title,
-            key_facts=["Officials said an earthquake struck the city."],
-            context=["Emergency teams began a response."],
+            key_facts=(
+                key_facts
+                if key_facts is not None
+                else ["Officials said an earthquake struck the city."]
+            ),
+            context=(
+                context if context is not None else ["Emergency teams began a response."]
+            ),
             uncertainties=[],
             source_count=source_count,
             summarizer_name="test",
@@ -100,4 +112,44 @@ async def test_script_writer_flags_limited_research_context() -> None:
     assert script.review_reasons == [
         "Insufficient additional research sources for automatic draft routing."
     ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_script_writer_trims_context_and_main_story_to_target() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    fact = (
+        "Officials said the earthquake struck the city while emergency crews responded "
+        "through the night and residents moved to temporary shelters."
+    )
+    context = [
+        "Additional background sentence about the response and recovery effort. " * 10
+    ]
+    async with sessions() as session:
+        await _create_eligible_article(
+            session,
+            source_count=2,
+            key_facts=[fact] * 4,
+            context=context,
+        )
+        await session.commit()
+
+    agent = ScriptWriterAgent(
+        Settings(database_url="sqlite+aiosqlite:///:memory:", script_target_seconds=30),
+        sessions,
+    )
+    result = await agent.execute()
+
+    assert result.status == "completed"
+    async with sessions() as session:
+        script = await session.scalar(select(NewsScript))
+
+    assert script is not None
+    assert script.status == "draft"
+    assert script.context == []
+    assert len(script.main_story) == 1
+    assert script.estimated_duration_seconds <= 33
     await engine.dispose()

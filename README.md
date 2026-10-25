@@ -8,7 +8,8 @@ Nothing is uploaded automatically. Approval is a separate editorial decision fro
 
 ```text
 RSS collection
-  -> duplicate clustering (syndicated reports never count as independent corroboration)
+  -> duplicate clustering + publisher grouping
+     (syndicated copies and multiple feeds from one publisher never count as independent corroboration)
   -> credibility assessment and evidence trail
   -> research brief
   -> neutral script + automated review flags
@@ -24,9 +25,9 @@ Each stage writes a structured `AgentRun` audit record. Generated media is repro
 
 ## Implemented phases
 
-1. **Collection and storage** - configurable RSS sources, full-text extraction with `trafilatura`, normalization, language detection, idempotent ingestion, and audit logs.
+1. **Collection and storage** - six configurable publishers by default (BBC World/Technology, Guardian World, NPR World, France 24, CBC World), full-text extraction with `trafilatura`, markup and extraction-artifact cleanup, normalization, language detection, idempotent ingestion, and audit logs.
 2. **Deduplication** - local sentence-transformer embeddings, `confirmed` and human-review clusters, with all source articles retained.
-3. **Credibility** - claim extraction, local corpus corroboration, trust-policy weighting, and conservative manual-review routing.
+3. **Credibility** - claim extraction, publisher-aware local corpus corroboration, trust-policy weighting, and conservative manual-review routing.
 4. **Research** - extractive, source-linked briefs with explicit uncertainty; optional free GDELT context adapter.
 5. **Script writing** - neutral scripts assembled only from corroborated research; sensational-language and minimum-source guardrails.
 6. **Scene planning** - timed, editable scenes with subtitles and visual-search guidance.
@@ -45,6 +46,7 @@ See [`docs/`](docs/) for the per-phase design notes.
 - Queuing a publishing action requires `approval.status == "approved"`, `render.status == "approved"`, and an unchanged hash.
 - The publishing agent re-checks both the approval hash and the hash pinned when the record was queued. If either changed, the record is blocked rather than uploaded.
 - Approval is locked once publishing activity exists, so a queued or published artifact cannot be re-approved after modification.
+- Corroboration is counted per publisher, not per feed. Trust-policy sources that share configured domains are grouped, and unconfigured feeds collapse to their registrable domain, so BBC World and BBC Technology count once even across `bbc.com` and `bbc.co.uk`.
 - Publishing status (`queued`, `publishing`, `exported`, `published`, `failed`, `blocked`) is separate from editorial approval status.
 - Every review decision and invalidation is recorded in `ApprovalEvent`, which is not deleted when media is regenerated.
 
@@ -53,8 +55,9 @@ See [`docs/`](docs/) for the per-phase design notes.
 Prerequisites:
 
 - Python 3.11+
-- FFmpeg on `PATH` (or set `NEWS_VIDEO_FFMPEG_EXECUTABLE`)
-- Piper executable and voice model for narration (or configure an equivalent test path)
+- FFmpeg on `PATH`, or a project-local binary configured with `NEWS_VIDEO_FFMPEG_EXECUTABLE` and `NEWS_TTS_FFMPEG_EXECUTABLE`
+- Piper executable and voice model for narration
+- Internet access on first use to download the local embedding model
 
 ```powershell
 py -3.11 -m venv .venv
@@ -72,6 +75,27 @@ uvicorn backend.app.main:app --reload
 Open the editorial dashboard at <http://127.0.0.1:8000/dashboard>. The API documentation is at <http://127.0.0.1:8000/docs>.
 
 The dashboard loads the review queue, source/evidence provenance, script and scene editors, quality checks, approval controls, publishing records, agent runs, and the article library.
+
+### Project-local media tools (Windows)
+
+This workspace supports an ignored local toolchain so the app does not require system-wide installs:
+
+```text
+.tools/ffmpeg/bin/ffmpeg.exe
+.tools/piper/piper/piper.exe
+.tools/node/node.exe
+models/piper/en_US-lessac-medium.onnx
+```
+
+`.tools/`, `models/*`, and `.env` are ignored by Git. Point the app at them in `.env`:
+
+```dotenv
+NEWS_TTS_PIPER_EXECUTABLE=.tools/piper/piper/piper.exe
+NEWS_TTS_FFMPEG_EXECUTABLE=.tools/ffmpeg/bin/ffmpeg.exe
+NEWS_VIDEO_FFMPEG_EXECUTABLE=.tools/ffmpeg/bin/ffmpeg.exe
+```
+
+See [`docs/local-tools.md`](docs/local-tools.md) for download and verification commands. `.env.example` remains the portable default for machines where the binaries are on `PATH`.
 
 ### Typical editorial run
 
@@ -119,6 +143,7 @@ Configuration uses the `NEWS_` environment prefix and is documented in [`.env.ex
 - `NEWS_SOURCES_FILE` and `NEWS_TRUST_POLICY_FILE` - editorial source and trust configuration.
 - `NEWS_*_ENABLED` and `NEWS_*_INTERVAL_MINUTES` - scheduler control per agent.
 - `NEWS_APPROVAL_MIN_VIDEO_BYTES` - minimum artifact size accepted by the quality gate.
+- `NEWS_USER_AGENT` - HTTP identity used for feed and article requests. The default is `NewsAutomationPlatform/0.1`; add a real deployment name and contact address before production use.
 - `NEWS_PUBLISHING_DEFAULT_PLATFORM`, `NEWS_PUBLISHING_OUTPUT_DIR`, and the YouTube variables above.
 
 ## Quality checks
@@ -128,14 +153,18 @@ $env:TEMP='C:\Users\Shiva\AppData\Local\Temp\opencode'
 $env:TMP=$env:TEMP
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m ruff check .
+.\.tools\node\node.exe --check frontend/app.js
 ```
 
-The temporary-directory override is only needed on Windows installations where the default pytest temp directory has restrictive ACLs.
+The temporary-directory override is only needed on Windows installations where the default pytest temp directory has restrictive ACLs. The Node check is optional and only validates the dashboard JavaScript.
+
+The latest live end-to-end run used the committed six-publisher configuration with real sentence-transformer embeddings, Piper, and FFmpeg: 109 articles, 38 corroborated stories, 38 research briefs and scripts, one 40.66-second narration, and a 506,343-byte 1920x1080 H.264/AAC/`mov_text` MP4. All six quality checks passed, the artifact was approved with SHA-256 `5d46fcafc29fc44c84f2f9f9b16f71092e6707376fd8d4bce01a1c5493ca94b9`, and local export produced a matching metadata manifest. See [`docs/implementation-status.md`](docs/implementation-status.md).
 
 ## Current limitations
 
-- The automated tests use fake video and narration renderers. Real FFmpeg rendering and real Piper synthesis require those binaries and models to be installed and were not verifiable in the development environment used for this repository.
-- `sentence-transformers` is declared as a dependency, but semantic deduplication needs the model download or a local model directory before its first real run.
+- The automated suite uses fake video and narration renderers for speed and determinism. Real FFmpeg/Piper execution is verified by the separate local smoke run, not by every `pytest` invocation.
+- The first real deduplication run downloads the `all-MiniLM-L6-v2` model unless it is already cached; the model is not stored in the repository.
 - The dashboard has no built-in login. It is designed for local or single-operator use behind a trusted network boundary.
 - The schema is created with SQLAlchemy `create_all`; there is no migration framework yet.
-- The optional YouTube adapter performs the upload request after recording an in-flight `publishing` attempt. If the process dies after the remote upload but before the result commit, reconcile the record manually before retrying to avoid a duplicate upload.
+- The optional YouTube adapter performs the upload request after recording an in-flight `publishing` attempt. If the process dies after the remote upload but before the result commit, reconcile the record manually before retrying to avoid a duplicate upload. A live YouTube upload has not been exercised.
+- The visual layer remains a neutral background; licensed stock footage is future work.

@@ -13,9 +13,18 @@ sources:
   - source_id: associated-press
     trust_weight: 0.95
     domains: [apnews.com]
-  - source_id: npr
+  - source_id: guardian-world
+    trust_weight: 0.85
+    domains: [theguardian.com]
+  - source_id: npr-world
     trust_weight: 0.85
     domains: [npr.org]
+  - source_id: france24
+    trust_weight: 0.80
+    domains: [france24.com]
+  - source_id: cbc-world
+    trust_weight: 0.80
+    domains: [cbc.ca]
   - source_id: official-government
     trust_weight: 0.95
     domains: [gov.uk, .gov]

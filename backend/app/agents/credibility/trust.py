@@ -29,6 +29,58 @@ class SourceTrustPolicy:
             for source in document.sources
             for domain in source.domains
         }
+        self._domain_sources: dict[str, set[str]] = {}
+        for source in document.sources:
+            for domain in source.domains:
+                key = domain.lower().lstrip(".")
+                self._domain_sources.setdefault(key, set()).add(source.source_id)
+        self._publisher_roots = self._build_publisher_roots(document.sources)
+
+    @staticmethod
+    def _build_publisher_roots(sources: list[TrustedSource]) -> dict[str, str]:
+        """Union sources that share a configured domain into one publisher group."""
+
+        parent = {source.source_id: source.source_id for source in sources}
+
+        def find(item: str) -> str:
+            root = item
+            while parent[root] != root:
+                root = parent[root]
+            while parent[item] != item:
+                next_item = parent[item]
+                parent[item] = root
+                item = next_item
+            return root
+
+        def union(left: str, right: str) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        owner: dict[str, str] = {}
+        for source in sources:
+            for domain in source.domains:
+                key = domain.lower().lstrip(".")
+                existing = owner.get(key)
+                if existing is None:
+                    owner[key] = source.source_id
+                else:
+                    union(existing, source.source_id)
+        return {source_id: find(source_id) for source_id in parent}
+
+    def publisher_key(self, source_id: str) -> str | None:
+        root = self._publisher_roots.get(source_id)
+        return f"trust:{root}" if root else None
+
+    def publisher_key_for_url(self, url: str) -> str | None:
+        hostname = (urlparse(url).hostname or "").lower()
+        if not hostname:
+            return None
+        roots: set[str] = set()
+        for domain, source_ids in self._domain_sources.items():
+            if hostname == domain or hostname.endswith(f".{domain}"):
+                roots.update(self._publisher_roots[source_id] for source_id in source_ids)
+        return f"trust:{min(roots)}" if roots else None
 
     @classmethod
     def from_file(cls, path: Path) -> SourceTrustPolicy:

@@ -54,6 +54,28 @@ class OneSourceEvidenceFinder:
         ]
 
 
+class SamePublisherEvidenceFinder:
+    async def find(self, claim: str, article: Article) -> list[EvidenceCandidate]:
+        return [
+            EvidenceCandidate(
+                source_id="bbc-technology",
+                publisher="BBC News — Technology",
+                url="https://www.bbc.co.uk/news/technology-quake",
+                title="Earthquake strikes city",
+                snippet="Officials confirmed the event.",
+                relevance_score=0.98,
+            ),
+            EvidenceCandidate(
+                source_id="associated-press",
+                publisher="Associated Press",
+                url="https://apnews.com/article/quake",
+                title="City reports earthquake",
+                snippet="Emergency services responded.",
+                relevance_score=0.92,
+            ),
+        ]
+
+
 async def _make_agent(evidence_finder: object):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
@@ -63,9 +85,9 @@ async def _make_agent(evidence_finder: object):
         session.add(
             Article(
                 source_id="bbc-world",
-                source_name="BBC News",
-                url="https://bbc.example/story",
-                canonical_url="https://bbc.example/story",
+                source_name="BBC News — World",
+                url="https://www.bbc.com/news/world-quake",
+                canonical_url="https://www.bbc.com/news/world-quake",
                 title="Earthquake strikes city",
                 normalized_text="Officials said an earthquake struck the city today.",
             )
@@ -104,4 +126,23 @@ async def test_credibility_routes_single_source_to_manual_review() -> None:
     assert assessment is not None
     assert assessment.status == "needs_review"
     assert assessment.confidence_score <= 0.65
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_credibility_counts_two_feeds_from_one_publisher_once() -> None:
+    engine, sessions, agent = await _make_agent(SamePublisherEvidenceFinder())
+    await agent.execute()
+    async with sessions() as session:
+        assessment = await session.scalar(select(CredibilityAssessment))
+        evidence = list((await session.scalars(select(CredibilityEvidence))).all())
+
+    assert assessment is not None
+    assert assessment.status == "needs_review"
+    assert assessment.independent_source_count == 1
+    assert assessment.confidence_score <= 0.65
+    assert {item.source_id for item in evidence} == {
+        "bbc-technology",
+        "associated-press",
+    }
     await engine.dispose()

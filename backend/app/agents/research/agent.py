@@ -126,11 +126,13 @@ class ResearchAgent:
     def _create_provider(
         settings: Settings, session_factory: async_sessionmaker[AsyncSession]
     ) -> ResearchProvider:
+        trust_policy = SourceTrustPolicy.from_file(settings.trust_policy_file)
         providers: list[ResearchProvider] = [
-            LocalCorpusResearchProvider(session_factory, settings.research_max_sources)
+            LocalCorpusResearchProvider(
+                session_factory, settings.research_max_sources, trust_policy
+            )
         ]
         if settings.research_external_provider == "gdelt":
-            trust_policy = SourceTrustPolicy.from_file(settings.trust_policy_file)
             providers.append(GdeltResearchProvider(trust_policy, settings.research_max_sources))
         elif settings.research_external_provider != "none":
             raise ValueError("Unsupported research external provider; use 'none' or 'gdelt'")

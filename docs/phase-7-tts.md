@@ -23,6 +23,11 @@ The agent stores chunk source text, paths, start times, and durations. WAV mergi
 - `POST /api/v1/tts/runs` creates narration for eligible scripts.
 - `GET /api/v1/scripts/{script_id}/narration` returns the final files and ordered chunk timing.
 
+## Verification
+
+- `tests/test_tts.py` covers chunking, merged audio, timing metadata, and the optional MP3 path with a deterministic fake synthesizer.
+- A real local smoke run on 2026-10-25 used Piper `2023.11.14-2` with the `en_US-lessac-medium` voice and produced a 14.505-second WAV plus a 58 KB MP3. The `/system/status` capability report returned `piper_tts: true` and `tts_ffmpeg: true`.
+
 ## Next phase
 
 Render the planned scenes and narration into editable video timelines. Use FFmpeg for deterministic production rendering; retain the scene plan as the source of truth for subtitles, transitions, and timing.

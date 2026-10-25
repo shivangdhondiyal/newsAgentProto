@@ -11,5 +11,6 @@ logs/*.log
 assets/generated/
 assets/published/
 .pytest-tmp/
+.tools/
 models/*
 !models/.gitkeep

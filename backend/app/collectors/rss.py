@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -52,6 +53,56 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+class _VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def strip_html(value: str) -> str:
+    """Return visible text from an RSS title or summary without markup or entities."""
+
+    if not value:
+        return ""
+    if "<" not in value and "&" not in value:
+        return normalize_text(value)
+    parser = _VisibleTextParser()
+    try:
+        parser.feed(value)
+        parser.close()
+    except Exception:
+        return normalize_text(re.sub(r"<[^>]+>", " ", value))
+    return normalize_text(" ".join(parser.parts))
+
+
+def clean_extracted_text(value: str) -> str:
+    """Remove common extraction artifacts such as leading bullets or 'Published' labels."""
+
+    lines: list[str] = []
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-–—•*]\s*", "", line)
+        line = re.sub(r"^published\s+", "", line, flags=re.IGNORECASE)
+        if line:
+            lines.append(line)
+    return normalize_text(" ".join(lines))
+
+
 class RSSCollector:
     """RSS adapter with full-text enrichment. It has no database knowledge."""
 
@@ -75,7 +126,7 @@ class RSSCollector:
                 if article:
                     articles.append(article)
             except (httpx.HTTPError, ValueError) as exc:
-                message = f"{source.id}: skipped entry: {exc}"
+                message = f"{source.id}: skipped entry: {type(exc).__name__}: {exc}"
                 logger.warning(message)
                 warnings.append(message)
         return articles, warnings
@@ -84,11 +135,11 @@ class RSSCollector:
         self, source: RSSSource, entry: dict[str, Any]
     ) -> CollectedArticle | None:
         link = entry.get("link")
-        title = normalize_text(entry.get("title", ""))
+        title = strip_html(entry.get("title", ""))
         if not link or not title:
             return None
 
-        summary = normalize_text(entry.get("summary", "")) or None
+        summary = clean_extracted_text(strip_html(entry.get("summary", ""))) or None
         raw_html: str | None = None
         extracted_text: str | None = None
         if source.extract_full_text:
@@ -103,7 +154,9 @@ class RSSCollector:
                 favor_precision=True,
             )
 
-        normalized_text = normalize_text(extracted_text or summary or title)
+        normalized_text = (
+            clean_extracted_text(extracted_text) if extracted_text else summary or title
+        )
         language = self._detect_language(normalized_text)
         return CollectedArticle(
             source_id=source.id,

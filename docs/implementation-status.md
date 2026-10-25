@@ -20,8 +20,9 @@ This document records what has been verified in the repository, what is complete
 Latest verified local run:
 
 ```text
-pytest: 30 passed
+pytest: 39 passed
 ruff: All checks passed
+node --check frontend/app.js: passed
 ```
 
 Run the same checks with:
@@ -33,21 +34,57 @@ $env:TMP=$env:TEMP
 .venv\Scripts\python.exe -m ruff check .
 ```
 
+## Real-media and live-pipeline verification (2026-10-25)
+
+A separate smoke run exercised the real local toolchain installed under `.tools/` and `models/piper/`:
+
+```text
+FFmpeg:                9.0.2 essentials build
+Piper voice:           en_US-lessac-medium
+Embedding model:       sentence-transformers/all-MiniLM-L6-v2 (384 dimensions)
+Deduplication:         completed, real confirmed cluster created
+Narration:             14.505 s, 639,716-byte WAV and 58,531-byte MP3
+Video:                 180,232-byte MP4, 1920x1080, H.264 + AAC + mov_text
+Approval:              passed quality gate, SHA-256 pinned
+Publishing:            local export succeeded with metadata manifest
+Capability status:     video_ffmpeg, tts_ffmpeg, piper_tts,
+                       local_embeddings, local_publishing all true
+Dashboard JavaScript:  node --check passed (Node 22.23.4)
+```
+
+A full live pipeline run then used the committed `config/sources.yml` and `config/trust.yml` with six publishers:
+
+```text
+RSS collection:        109 articles from 6 publishers, 0 errors, 0 warnings
+Deduplication:         completed with real all-MiniLM-L6-v2 embeddings
+Credibility:           109 assessments, 38 corroborated stories
+Research:              38 briefs, 80 source records
+Scripts:               38 scripts, 31 scene plans
+Narration:             40.66 s, 1,793,136-byte WAV and 163,126-byte MP3
+Video:                 506,343-byte MP4, 1920x1080, H.264 + AAC + mov_text
+Quality gate:          6/6 checks passed
+Approval:              approved, SHA-256 5d46fcafc29fc44c84f2f9f9b16f71092e6707376fd8d4bce01a1c5493ca94b9
+Publishing:            local export succeeded with metadata manifest
+```
+
+The run confirmed publisher-level independence in practice: BBC World and BBC Technology were grouped as one publisher, and corroborated stories drew on up to four distinct publisher groups. It also verified the NPR fix: NPR article pages now return normally with the default `NewsAutomationPlatform/0.1` user agent, after the previous placeholder contact string caused read timeouts.
+
+The `.env` file used by this workspace points at the project-local binaries. `.tools/`, `models/*`, and `.env` are ignored by Git; see [`local-tools.md`](local-tools.md) to reproduce the setup.
+
 ## Environment-dependent or not verified end-to-end
 
-- **Real FFmpeg rendering:** FFmpeg is not on `PATH` in the development environment. Video tests use a fake renderer. The `/system/status` capability report exposes `video_ffmpeg: false` until FFmpeg is installed.
-- **Real Piper narration:** the Piper executable and voice model are not present. TTS tests use a fake synthesizer. `/system/status` exposes `piper_tts` readiness.
-- **Real semantic embeddings:** `sentence-transformers` is declared in `pyproject.toml` but is not installed in the current `.venv`, so no real model inference was executed. Deduplication tests use deterministic test vectors/providers.
-- **Real YouTube upload:** the official OAuth refresh and resumable-upload sequence is tested against mocked HTTP responses only. No live credentials were used.
-- **JavaScript syntax/runtime check:** Node.js was not available in the environment. The dashboard is covered by asset-serving tests and manual review, but not by a JS parser or browser test.
+- **Real YouTube upload:** the official OAuth refresh and resumable-upload sequence is tested against mocked HTTP responses only. No live credentials or live channel were used.
 - **Windows pytest temp ACL:** the default user temp directory rejects pytest cache writes in this environment. Tests pass when `TEMP`/`TMP` point to the approved opencode temp directory. This is an environment issue, not an application failure.
+- **Voice-model licensing:** the Lessac voice model is suitable for local verification, but its model-card license and the FFmpeg build license should be reviewed before redistribution or commercial publishing.
 
 ## Known limitations and follow-up work
 
+- The local binaries and model weights are intentionally not committed. A fresh clone must install FFmpeg, Piper, a voice, and the embedding dependencies; `docs/local-tools.md` records the setup used for verification.
 - No database migrations: schema creation uses SQLAlchemy `create_all`. Existing databases created before Phases 9–10 need the new tables created by startup or a real migration tool.
 - The dashboard has no authentication. It is intended for localhost or a trusted single-operator network; put authentication and TLS in front of it before exposing it.
 - The visual layer remains a neutral background. A licensed asset resolver is future work; the timeline already carries the search and animation guidance.
 - YouTube uploads read the whole MP4 into memory and do not implement chunked resume after a mid-upload connection failure.
 - A crash after a remote upload succeeds but before the result is committed can leave a record in `publishing`. Reconcile it manually before retrying; retrying a `publishing` record is intentionally not automatic.
 - Duplicate clusters marked `confirmed` or left in `review` are treated as one report for corroboration. Only a human-rejected duplicate cluster can contribute an independent source.
+- Corroboration is counted per publisher. Trust-policy sources sharing configured domains are grouped, and unconfigured feeds collapse to their registrable domain, so multiple feeds from one publisher cannot create false independence.
 - Text generation defaults to deterministic extractive logic. Optional local Ollama adapters exist, but no cloud LLM is used.

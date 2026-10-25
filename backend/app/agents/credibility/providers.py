@@ -9,7 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.agents.credibility.contracts import EvidenceCandidate
 from backend.app.agents.credibility.trust import SourceTrustPolicy
-from backend.app.agents.independence import filter_independent_articles
+from backend.app.agents.independence import (
+    filter_independent_articles,
+    filter_independent_publishers,
+)
 from backend.app.db.models import Article
 
 STOP_WORDS = {
@@ -115,7 +118,7 @@ class LocalEvidenceFinder:
         async with self._session_factory() as session:
             statement = (
                 select(Article)
-                .where(Article.id != article.id, Article.source_id != article.source_id)
+                .where(Article.id != article.id)
                 .order_by(Article.published_at.desc())
                 .limit(250)
             )
@@ -135,6 +138,9 @@ class LocalEvidenceFinder:
             )
             relevant = [candidate for candidate, relevance in scored if relevance >= 0.35]
             independent = await filter_independent_articles(session, article.id, relevant)
+            independent = filter_independent_publishers(
+                article, independent, self._trust_policy
+            )
             relevance_by_id = {candidate.id: relevance for candidate, relevance in scored}
 
         return [

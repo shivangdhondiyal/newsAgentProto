@@ -8,7 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.agents.credibility.trust import SourceTrustPolicy
-from backend.app.agents.independence import filter_independent_articles
+from backend.app.agents.independence import (
+    filter_independent_articles,
+    filter_independent_publishers,
+)
 from backend.app.agents.research.contracts import ResearchProvider, ResearchSourceCandidate
 from backend.app.db.models import Article
 
@@ -50,19 +53,38 @@ def lexical_relevance(query: str, candidate: str) -> float:
     return len(query_terms & candidate_terms) / len(query_terms)
 
 
+def trim_snippet(value: str, limit: int = 400) -> str:
+    """Keep research context short and prefer a sentence boundary."""
+
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    candidate = text[:limit]
+    boundary = max(candidate.rfind(". "), candidate.rfind("! "), candidate.rfind("? "))
+    if boundary >= limit // 2:
+        return candidate[: boundary + 1]
+    return candidate.rstrip() + "…"
+
+
 class LocalCorpusResearchProvider:
     """Independent-source context retrieval with no network or paid dependency."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession], max_sources: int) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        max_sources: int,
+        trust_policy: SourceTrustPolicy | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._max_sources = max_sources
+        self._trust_policy = trust_policy
 
     async def search(self, article: Article) -> list[ResearchSourceCandidate]:
         query = f"{article.title} {article.normalized_text[:2_000]}"
         async with self._session_factory() as session:
             statement = (
                 select(Article)
-                .where(Article.id != article.id, Article.source_id != article.source_id)
+                .where(Article.id != article.id)
                 .order_by(Article.published_at.desc())
                 .limit(250)
             )
@@ -80,8 +102,11 @@ class LocalCorpusResearchProvider:
                 key=lambda item: item[1],
                 reverse=True,
             )
-            relevant = [candidate for candidate, relevance in scored if relevance >= 0.20]
+            relevant = [candidate for candidate, relevance in scored if relevance >= 0.30]
             independent = await filter_independent_articles(session, article.id, relevant)
+            independent = filter_independent_publishers(
+                article, independent, self._trust_policy
+            )
             relevance_by_id = {candidate.id: relevance for candidate, relevance in scored}
 
         findings = [
@@ -91,7 +116,7 @@ class LocalCorpusResearchProvider:
                 publisher=candidate.source_name,
                 url=candidate.url,
                 title=candidate.title,
-                snippet=candidate.summary or candidate.normalized_text[:500],
+                snippet=trim_snippet(candidate.summary or candidate.normalized_text),
                 relevance_score=relevance_by_id[candidate.id],
             )
             for candidate in independent

@@ -19,6 +19,7 @@ from backend.app.agents.credibility.providers import (
     OllamaClaimExtractor,
 )
 from backend.app.agents.credibility.trust import SourceTrustPolicy
+from backend.app.agents.independence import publisher_identity
 from backend.app.core.config import Settings
 from backend.app.db.models import AgentRun, Article, CredibilityAssessment, CredibilityEvidence
 from backend.app.schemas.credibility import CredibilityRunRead
@@ -139,13 +140,30 @@ class CredibilityAgent:
         return assessment, evidence_by_claim
 
     def _score(self, article: Article, evidence: list[EvidenceCandidate]) -> ScoreResult:
-        strongest_by_source: dict[str, tuple[EvidenceCandidate, float]] = {}
+        target_identity = publisher_identity(
+            article.source_id,
+            article.source_name,
+            article.url,
+            article.canonical_url,
+            self._trust_policy,
+        )
+        strongest_by_publisher: dict[str, tuple[EvidenceCandidate, float]] = {}
         for item in evidence:
+            identity = publisher_identity(
+                item.source_id,
+                item.publisher,
+                item.url,
+                trust_policy=self._trust_policy,
+            )
+            if identity == target_identity:
+                continue
             weighted = item.relevance_score * self._trust_policy.weight_for(item.source_id)
-            current = strongest_by_source.get(item.source_id)
+            current = strongest_by_publisher.get(identity)
             if current is None or weighted > current[1]:
-                strongest_by_source[item.source_id] = (item, weighted)
-        strongest = sorted(strongest_by_source.values(), key=lambda item: item[1], reverse=True)[:3]
+                strongest_by_publisher[identity] = (item, weighted)
+        strongest = sorted(
+            strongest_by_publisher.values(), key=lambda item: item[1], reverse=True
+        )[:3]
         source_count = len(strongest)
         target_weight = self._trust_policy.weight_for(article.source_id)
         evidence_strength = (

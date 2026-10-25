@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.agents.credibility.agent import CredibilityAgent
-from backend.app.agents.independence import filter_independent_articles
+from backend.app.agents.credibility.trust import SourceTrustPolicy
+from backend.app.agents.independence import (
+    filter_independent_articles,
+    publisher_identity,
+)
 from backend.app.core.config import Settings
 from backend.app.db.base import Base
 from backend.app.db.models import (
@@ -27,17 +31,21 @@ class ClaimExtractor:
 
 
 async def _article(
-    session, source_id: str, url: str, title: str = "Earthquake strikes city"
+    session,
+    source_id: str,
+    url: str,
+    title: str = "Earthquake strikes city",
+    *,
+    source_name: str | None = None,
+    text: str = "Officials said an earthquake struck the city. Emergency crews responded.",
 ) -> Article:
     article = Article(
         source_id=source_id,
-        source_name=source_id,
+        source_name=source_name or source_id,
         url=url,
         canonical_url=url,
         title=title,
-        normalized_text=(
-            "Officials said an earthquake struck the city. Emergency crews responded."
-        ),
+        normalized_text=text,
     )
     session.add(article)
     await session.flush()
@@ -113,6 +121,94 @@ async def test_credibility_does_not_count_syndicated_reports_as_independent(
         syndicated = await _article(session, "npr", "https://npr.example/syndicated")
         await _article(session, "associated-press", "https://ap.example/independent")
         await _cluster(session, [target, duplicate, syndicated])
+        await session.commit()
+
+    settings = Settings(
+        database_url=database_url,
+        trust_policy_file=Path("config/trust.yml"),
+        credibility_confidence_threshold=0.75,
+    )
+    result = await CredibilityAgent(settings, sessions, ClaimExtractor()).execute()
+    assert result.status == "completed"
+
+    async with sessions() as session:
+        assessment = await session.scalar(
+            select(CredibilityAssessment).where(CredibilityAssessment.article_id == target.id)
+        )
+        evidence = list(
+            (
+                await session.scalars(
+                    select(CredibilityEvidence).where(
+                        CredibilityEvidence.assessment_id == assessment.id
+                    )
+                )
+            ).all()
+        )
+
+    assert assessment is not None
+    assert assessment.status == "needs_review"
+    assert assessment.independent_source_count == 1
+    assert {item.source_id for item in evidence} == {"associated-press"}
+    assert assessment.confidence_score <= 0.65
+    await engine.dispose()
+
+
+def test_publisher_identity_groups_separate_feeds_by_publisher() -> None:
+    policy = SourceTrustPolicy.from_file(Path("config/trust.yml"))
+    world = publisher_identity(
+        "bbc-world",
+        "BBC News — World",
+        "https://www.bbc.com/news/world-1",
+        trust_policy=policy,
+    )
+    technology = publisher_identity(
+        "bbc-technology",
+        "BBC News — Technology",
+        "https://www.bbc.co.uk/news/technology-1",
+        trust_policy=policy,
+    )
+    reuters = publisher_identity(
+        "reuters", "Reuters", "https://www.reuters.com/world/quake", trust_policy=policy
+    )
+
+    assert world == technology == "trust:bbc-world"
+    assert reuters == "trust:reuters"
+    assert (
+        publisher_identity(
+            "bbc-world", "BBC News — World", "https://www.bbc.co.uk/news/world-1"
+        )
+        == "domain:bbc.co.uk"
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_feeds_from_one_publisher_do_not_create_corroboration(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'publisher.sqlite').as_posix()}"
+    engine = create_async_engine(database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        target = await _article(
+            session,
+            "bbc-world",
+            "https://www.bbc.com/news/world-quake",
+            source_name="BBC News — World",
+        )
+        await _article(
+            session,
+            "bbc-technology",
+            "https://www.bbc.co.uk/news/technology-quake",
+            source_name="BBC News — Technology",
+        )
+        await _article(
+            session,
+            "associated-press",
+            "https://apnews.com/article/quake",
+            source_name="Associated Press",
+        )
         await session.commit()
 
     settings = Settings(

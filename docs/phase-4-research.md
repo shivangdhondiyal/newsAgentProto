@@ -16,7 +16,7 @@ flowchart LR
 
 The Research Agent is deliberately downstream of credibility: reports in `needs_review` do not become enriched content that could look authoritative. It stores all research-source links and snippets, produces extractive facts and context, and adds an uncertainty note rather than resolving conflicts on its own.
 
-The default provider is local-corpus-only. The optional GDELT DOC 2.0 adapter is key-free and supplies recent article-list results; its output is filtered through `config/trust.yml` before it can enter a brief. GDELT results remain candidates, not verification evidence.
+The default provider is local-corpus-only. It removes duplicate clusters, keeps at most one source per publisher, applies a `0.30` lexical relevance floor, and trims snippets to about 400 characters so the brief stays focused. The optional GDELT DOC 2.0 adapter is key-free and supplies recent article-list results; its output is filtered through `config/trust.yml` before it can enter a brief. GDELT results remain candidates, not verification evidence.
 
 ## API
 

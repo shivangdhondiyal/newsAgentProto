@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     publishing_youtube_made_for_kids: bool = False
     request_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     max_articles_per_source: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "NewsAutomationPlatform/0.1 (contact: replace-me@example.com)"
+    user_agent: str = "NewsAutomationPlatform/0.1"
     log_level: str = "INFO"
 
 

@@ -51,7 +51,11 @@ class ScriptWriterAgent:
                 run.items_seen = len(candidates)
                 for article, assessment, brief in candidates:
                     draft = await self._writer.write(article, assessment, brief)
-                    review_reasons = self._review_reasons(draft, brief)
+                    draft = self._fit_to_target(draft, self._settings.script_target_seconds)
+                    estimated_duration = self._estimate_duration(self._render(draft))
+                    review_reasons = self._review_reasons(
+                        draft, brief, estimated_duration
+                    )
                     full_text = self._render(draft)
                     script = NewsScript(
                         article_id=article.id,
@@ -64,7 +68,7 @@ class ScriptWriterAgent:
                         context=draft.context,
                         closing=draft.closing,
                         full_text=full_text,
-                        estimated_duration_seconds=self._estimate_duration(full_text),
+                        estimated_duration_seconds=estimated_duration,
                         target_duration_seconds=self._settings.script_target_seconds,
                         writer_name=self._writer.name,
                         review_reasons=review_reasons,
@@ -111,7 +115,12 @@ class ScriptWriterAgent:
         )
         return list((await session.execute(statement)).tuples().all())
 
-    def _review_reasons(self, draft: ScriptDraft, brief: ResearchBrief) -> list[str]:
+    def _review_reasons(
+        self,
+        draft: ScriptDraft,
+        brief: ResearchBrief,
+        estimated_duration_seconds: int,
+    ) -> list[str]:
         reasons: list[str] = []
         if brief.source_count < self._settings.script_minimum_research_sources:
             reasons.append("Insufficient additional research sources for automatic draft routing.")
@@ -121,7 +130,38 @@ class ScriptWriterAgent:
             reasons.append(f"Potentially sensational language found: {', '.join(prohibited)}.")
         if not draft.main_story:
             reasons.append("The script contains no evidence-backed main-story section.")
+        if estimated_duration_seconds > self._settings.script_target_seconds * 1.25:
+            reasons.append(
+                f"Estimated duration ({estimated_duration_seconds}s) exceeds the "
+                f"{self._settings.script_target_seconds}s target."
+            )
         return reasons
+
+    def _fit_to_target(self, draft: ScriptDraft, target_seconds: int) -> ScriptDraft:
+        """Trim context and then main-story sentences to respect the target duration."""
+
+        main_story = list(draft.main_story)
+        context = list(draft.context)
+        limit = max(1, round(target_seconds * 1.1))
+
+        def candidate_draft(main: list[str], ctx: list[str]) -> ScriptDraft:
+            return ScriptDraft(
+                title=draft.title,
+                hook=draft.hook,
+                introduction=draft.introduction,
+                main_story=main,
+                context=ctx,
+                closing=draft.closing,
+            )
+
+        def estimated(main: list[str], ctx: list[str]) -> int:
+            return self._estimate_duration(self._render(candidate_draft(main, ctx)))
+
+        while context and estimated(main_story, context) > limit:
+            context.pop()
+        while len(main_story) > 1 and estimated(main_story, context) > limit:
+            main_story.pop()
+        return candidate_draft(main_story, context)
 
     @staticmethod
     def _render(draft: ScriptDraft) -> str:
@@ -137,7 +177,7 @@ class ScriptWriterAgent:
     @staticmethod
     def _estimate_duration(text: str) -> int:
         word_count = len(re.findall(r"\b\w+\b", text))
-        return max(1, round(word_count / 2.5))
+        return max(1, round(word_count / 2.0))
 
     @staticmethod
     def _create_writer(settings: Settings) -> ScriptWriter:

@@ -16,6 +16,8 @@ flowchart LR
 
 The score is an evidence-based **corroboration estimate**, never a declaration that a claim is true. The agent caps scores at `0.65` if fewer than two independent trusted sources are found, so a single publisher cannot automatically pass the configured `0.75` confidence threshold.
 
+Independence is counted per publisher, not per feed. Duplicate clusters are treated as one report, trust-policy sources that share configured domains are grouped, and unconfigured feeds collapse to their registrable domain. BBC World and BBC Technology therefore count once even when their articles use `bbc.com` and `bbc.co.uk`.
+
 `config/trust.yml` is an explicit, version-controlled editorial policy. It is a weighted input to the assessment and must be reviewed by the editorial team; source reputation alone cannot verify a particular claim.
 
 ## Local AI option
