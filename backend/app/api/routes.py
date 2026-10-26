@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.workflow import execute_synchronously
 from backend.app.db.models import (
     Article,
     CredibilityAssessment,
@@ -58,66 +59,82 @@ async def health() -> dict[str, str]:
 
 @router.post("/collection/runs", response_model=CollectionRunRead, tags=["collection"])
 async def trigger_collection(request: Request) -> CollectionRunRead:
-    try:
-        return await request.app.state.collector_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Collection run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="news_collector",
+        label="Collect news",
+        operation=request.app.state.collector_agent.execute,
+    )
 
 
 @router.post("/deduplication/runs", response_model=DeduplicationRunRead, tags=["deduplication"])
 async def trigger_deduplication(request: Request) -> DeduplicationRunRead:
-    try:
-        return await request.app.state.deduplication_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Deduplication run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="deduplication",
+        label="Deduplicate",
+        operation=request.app.state.deduplication_agent.execute,
+    )
 
 
 @router.post("/credibility/runs", response_model=CredibilityRunRead, tags=["credibility"])
 async def trigger_credibility(request: Request) -> CredibilityRunRead:
-    try:
-        return await request.app.state.credibility_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Credibility run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="credibility",
+        label="Check credibility",
+        operation=request.app.state.credibility_agent.execute,
+    )
 
 
 @router.post("/research/runs", response_model=ResearchRunRead, tags=["research"])
 async def trigger_research(request: Request) -> ResearchRunRead:
-    try:
-        return await request.app.state.research_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Research run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="research",
+        label="Build research",
+        operation=request.app.state.research_agent.execute,
+    )
 
 
 @router.post("/script-writer/runs", response_model=ScriptRunRead, tags=["scripts"])
 async def trigger_script_writer(request: Request) -> ScriptRunRead:
-    try:
-        return await request.app.state.script_writer_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Script writer run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="script_writer",
+        label="Write scripts",
+        operation=request.app.state.script_writer_agent.execute,
+    )
 
 
 @router.post("/scene-planner/runs", response_model=ScenePlanRunRead, tags=["scenes"])
 async def trigger_scene_planner(request: Request) -> ScenePlanRunRead:
-    try:
-        return await request.app.state.scene_planner_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Scene planning run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="scene_planner",
+        label="Plan scenes",
+        operation=request.app.state.scene_planner_agent.execute,
+    )
 
 
 @router.post("/tts/runs", response_model=TTSRunRead, tags=["tts"])
 async def trigger_tts(request: Request) -> TTSRunRead:
-    try:
-        return await request.app.state.tts_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="TTS run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="tts",
+        label="Narrate",
+        operation=request.app.state.tts_agent.execute,
+    )
 
 
 @router.post("/video-generator/runs", response_model=VideoRunRead, tags=["video"])
 async def trigger_video_generation(request: Request) -> VideoRunRead:
-    try:
-        return await request.app.state.video_generator_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Video generation run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="video_generator",
+        label="Render video",
+        operation=request.app.state.video_generator_agent.execute,
+    )
 
 
 @router.get("/articles", response_model=list[ArticleRead], tags=["articles"])

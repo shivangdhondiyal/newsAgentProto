@@ -9,6 +9,7 @@ import httpx
 import yaml
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.collectors.rss import RSSCollector, RSSSource
 from backend.app.core.config import Settings
 from backend.app.db.models import AgentRun
@@ -60,7 +61,7 @@ class NewsCollectorAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return CollectionRunRead(
             id=run.id,
             status=run.status,

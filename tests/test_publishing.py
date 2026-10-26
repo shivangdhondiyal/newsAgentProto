@@ -8,7 +8,11 @@ import pytest
 import respx
 from fastapi import HTTPException
 
-from backend.app.api.publishing import publishing_analytics, queue_publish
+from backend.app.api.publishing import (
+    download_local_export,
+    publishing_analytics,
+    queue_publish,
+)
 from backend.app.db.models import ContentApproval, NewsScript, PublishingRecord, VideoRender
 from backend.app.publishers.agent import PublishingAgent
 from backend.app.publishers.contracts import PublishJob
@@ -164,6 +168,55 @@ async def test_reapproval_after_artifact_change_cannot_reuse_a_queued_record(
         record = await session.get(PublishingRecord, record_id)
         assert record.status == "blocked"
         assert "pinned when it was queued" in record.last_error
+    await seeded.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_local_export_file_is_served_only_from_the_publish_root(
+    tmp_path: Path,
+) -> None:
+    seeded = await seed_content(tmp_path)
+    await _approve(seeded)
+    agent = PublishingAgent(seeded.settings, seeded.sessions)
+    async with seeded.sessions() as session:
+        record = await queue_publish(
+            _request(agent),
+            PublishingQueueRequest(video_render_id=seeded.video_id, platform="local"),
+            session,
+        )
+        record_id = record.id
+    await agent.execute()
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(settings=seeded.settings))
+    )
+    publish_root = Path(seeded.settings.publishing_output_dir).resolve()
+
+    async with seeded.sessions() as session:
+        response = await download_local_export(request, record_id, session)
+        exported = Path(response.path).resolve()
+        assert exported.is_file()
+        assert exported.is_relative_to(publish_root)
+        assert response.media_type == "video/mp4"
+
+        with pytest.raises(HTTPException) as missing:
+            await download_local_export(request, "missing-record", session)
+        assert missing.value.status_code == 404
+
+        record = await session.get(PublishingRecord, record_id)
+        record.status = "queued"
+        await session.commit()
+        with pytest.raises(HTTPException) as incomplete:
+            await download_local_export(request, record_id, session)
+        assert incomplete.value.status_code == 409
+
+        record.status = "exported"
+        record.external_url = seeded.video_path.resolve().as_uri()
+        await session.commit()
+        with pytest.raises(HTTPException) as outside:
+            await download_local_export(request, record_id, session)
+        assert outside.value.status_code == 404
+
     await seeded.engine.dispose()
 
 

@@ -9,6 +9,7 @@ from time import perf_counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.tts.audio import merge_and_normalize_wav, wave_metadata
 from backend.app.agents.tts.contracts import SpeechSynthesizer
 from backend.app.agents.tts.providers import PiperSpeechSynthesizer
@@ -56,7 +57,7 @@ class TTSAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return TTSRunRead.model_validate(run)
 
     async def _load_eligible_scripts(

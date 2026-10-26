@@ -8,6 +8,7 @@ from time import perf_counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.video.contracts import VideoRenderer
 from backend.app.agents.video.renderer import FFmpegVideoRenderer
 from backend.app.agents.video.subtitles import render_srt
@@ -69,7 +70,7 @@ class VideoGeneratorAgent:
                 await session.commit()
                 await session.refresh(run)
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return VideoRunRead.model_validate(run)
 
     async def _load_eligible_narrations(

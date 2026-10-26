@@ -13,7 +13,8 @@ def test_dashboard_serves_frontend_and_blocks_unknown_assets() -> None:
 
     index = client.get("/dashboard")
     assert index.status_code == 200
-    assert "News Automation Studio" in index.text
+    assert "Newsroom" in index.text
+    assert "Editorial operations" in index.text
     assert "/dashboard/app.js" in index.text
     assert "Review queue" in index.text
 

@@ -3,13 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.serializers import as_utc
+from backend.app.api.workflow import execute_synchronously
 from backend.app.core.config import get_settings
 from backend.app.db.models import (
     Article,
@@ -156,10 +160,12 @@ async def queue_publish(
 
 @router.post("/runs", response_model=PublishingRunRead)
 async def run_publishing(request: Request) -> PublishingRunRead:
-    try:
-        return await request.app.state.publishing_agent.execute()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="Publishing run failed") from exc
+    return await execute_synchronously(
+        request,
+        agent_name="publishing",
+        label="Process publishing",
+        operation=request.app.state.publishing_agent.execute,
+    )
 
 
 @router.get("/analytics", response_model=PublishingAnalyticsRead)
@@ -224,6 +230,30 @@ async def list_publishing_records(
     if video_render_id:
         statement = statement.where(PublishingRecord.video_render_id == video_render_id)
     return list((await session.scalars(statement)).all())
+
+
+@router.get("/records/{record_id}/file")
+async def download_local_export(
+    request: Request,
+    record_id: str,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> FileResponse:
+    record = await session.get(PublishingRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Publishing record not found")
+    if record.status not in {"exported", "published"}:
+        raise HTTPException(status_code=409, detail="This record has no completed export")
+    if record.platform != "local" or not (record.external_url or "").startswith("file://"):
+        raise HTTPException(status_code=404, detail="This record has no local export file")
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    published_root = Path(settings.publishing_output_dir).resolve()
+    try:
+        export_path = Path(url2pathname(urlparse(record.external_url).path)).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="Export file is unavailable") from None
+    if published_root not in export_path.parents or not export_path.is_file():
+        raise HTTPException(status_code=404, detail="Export file is unavailable")
+    return FileResponse(export_path, filename=export_path.name, media_type="video/mp4")
 
 
 @router.post("/records/{record_id}/retry", response_model=PublishingRecordRead)

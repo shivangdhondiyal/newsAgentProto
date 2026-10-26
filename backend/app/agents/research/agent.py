@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.agents.credibility.trust import SourceTrustPolicy
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.research.contracts import ResearchProvider, ResearchSummarizer
 from backend.app.agents.research.providers import (
     CompositeResearchProvider,
@@ -108,7 +109,7 @@ class ResearchAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return ResearchRunRead.model_validate(run)
 
     async def _load_researchable_articles(self, session: AsyncSession) -> list[Article]:

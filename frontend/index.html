@@ -4,116 +4,324 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>News Automation Studio</title>
+    <meta name="theme-color" content="#070d18" />
+    <meta
+      name="description"
+      content="Editorial operations console for the AI newsroom: pipeline health, review queue, agent runs, and publishing."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%235eead4'/%3E%3Cpath d='M8 9h12a3 3 0 0 1 3 3v11H11a3 3 0 0 1-3-3V9Z' fill='none' stroke='%2304201d' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='M12 14h7M12 19h7' stroke='%2304201d' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <title>Newsroom · Editorial operations</title>
     <link rel="stylesheet" href="/dashboard/styles.css" />
   </head>
   <body>
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <span class="brand-mark">N</span>
-          <div>
-            <strong>News Automation</strong>
-            <small>Editorial control room</small>
-          </div>
-        </div>
-        <nav class="nav" aria-label="Main">
-          <button class="nav-item active" data-view="queue">
-            <span>Review queue</span><span class="pill" id="nav-pending">0</span>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="nav-scrim" id="nav-scrim" hidden></div>
+    <div class="app-shell" id="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+        <div class="sidebar-head">
+          <a class="brand" href="#/overview" aria-label="Newsroom editorial operations overview">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2V5Z" />
+                <path d="M8 9h6M8 13h6" />
+              </svg>
+            </span>
+            <span class="brand-text">
+              <strong>Newsroom</strong>
+              <small>Editorial operations</small>
+            </span>
+          </a>
+          <button
+            class="icon-button sidebar-collapse"
+            id="sidebar-collapse"
+            type="button"
+            aria-label="Collapse sidebar"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /><path d="M19 5v14" /></svg>
           </button>
-          <button class="nav-item" data-view="runs">Agent runs</button>
-          <button class="nav-item" data-view="publishing">Publishing</button>
-          <button class="nav-item" data-view="articles">Articles</button>
+        </div>
+
+        <nav class="nav" aria-label="Workspace">
+          <p class="nav-group-label">Operations</p>
+          <a class="nav-item" data-view="overview" href="#/overview">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
+            <span class="nav-label">Overview</span>
+          </a>
+          <a class="nav-item" data-view="queue" href="#/review">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m8 12 3 3 5-6" /></svg>
+            <span class="nav-label">Review queue</span>
+            <span class="nav-badge" id="nav-pending" aria-label="Pending reviews">0</span>
+          </a>
+
+          <p class="nav-group-label">Pipeline</p>
+          <a class="nav-item" data-view="runs" href="#/runs">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-7 5 14L17 12h4" /></svg>
+            <span class="nav-label">Agent runs</span>
+          </a>
+
+          <p class="nav-group-label">Distribution</p>
+          <a class="nav-item" data-view="publishing" href="#/publishing">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>
+            <span class="nav-label">Publishing</span>
+          </a>
+
+          <p class="nav-group-label">Library</p>
+          <a class="nav-item" data-view="articles" href="#/articles">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M8 13h8M8 17h6" /></svg>
+            <span class="nav-label">Articles</span>
+          </a>
         </nav>
+
         <div class="sidebar-foot">
-          <div class="status-line"><span class="dot" id="system-dot"></span><span id="system-status">Connecting…</span></div>
-          <p id="system-capabilities" class="capability-note"></p>
-          <p>Approval is required before any publishing action. Every render is tied to an immutable artifact hash.</p>
+          <div class="system-state" id="sidebar-system">
+            <span class="status-dot" id="system-dot" aria-hidden="true"></span>
+            <div>
+              <strong id="system-status">Connecting…</strong>
+              <small id="system-detail">Checking services</small>
+            </div>
+          </div>
+          <p class="sidebar-note">
+            Human approval is required before publishing. Every render is pinned to an
+            immutable artifact hash.
+          </p>
         </div>
       </aside>
 
-      <main class="main">
+      <div class="workspace">
         <header class="topbar">
-          <div>
-            <p class="eyebrow" id="view-eyebrow">Editorial desk</p>
-            <h1 id="view-title">Review queue</h1>
+          <div class="topbar-main">
+            <button
+              class="icon-button menu-toggle"
+              id="menu-toggle"
+              type="button"
+              aria-label="Open navigation"
+              aria-expanded="false"
+              aria-controls="sidebar"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+            </button>
+            <div class="page-heading">
+              <p class="eyebrow" id="view-eyebrow">Operations</p>
+              <h1 id="view-title">Command center</h1>
+              <p class="page-description" id="view-description">
+                What is happening, what needs attention, and what to do next.
+              </p>
+            </div>
           </div>
           <div class="topbar-actions">
-            <button class="button ghost" id="refresh-button">Refresh</button>
-            <button class="button" id="pipeline-button">Advance pipeline</button>
+            <div class="health-chip" id="health-chip" title="Application health">
+              <span class="status-dot" id="health-dot" aria-hidden="true"></span>
+              <span id="health-label">Checking system</span>
+            </div>
+            <span class="refresh-meta" id="last-refreshed">Not refreshed yet</span>
+            <button class="button ghost" id="refresh-button" type="button">
+              <svg class="icon spin-target" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
+              <span id="refresh-label">Refresh</span>
+            </button>
+            <button class="button primary" id="pipeline-button" type="button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z" /></svg>
+              <span id="pipeline-label">Advance pipeline</span>
+            </button>
           </div>
         </header>
 
-        <section id="view-queue" class="view">
-          <div class="stat-grid" id="review-stats"></div>
-          <div class="queue-layout">
-            <div class="panel queue-panel">
+        <div class="pipeline-progress" id="pipeline-progress" role="status" aria-live="polite" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="pipeline-progress-text">Advancing pipeline…</span>
+        </div>
+
+        <main class="main" id="main-content" tabindex="-1">
+          <section class="view" id="view-overview" data-view-panel="overview">
+            <div class="metric-grid" id="overview-metrics" aria-label="Operational overview"></div>
+
+            <div class="command-grid">
+              <section class="panel pipeline-panel" aria-labelledby="pipeline-heading">
+                <div class="panel-head">
+                  <div>
+                    <h2 id="pipeline-heading">Editorial pipeline</h2>
+                    <p class="panel-subtitle">Nine bounded stages from discovery to distribution.</p>
+                  </div>
+                  <span class="muted" id="pipeline-summary"></span>
+                </div>
+                <div class="pipeline-grid" id="pipeline-grid"></div>
+              </section>
+
+              <div class="side-stack">
+                <section class="panel attention-panel" aria-labelledby="attention-heading">
+                  <div class="panel-head">
+                    <div>
+                      <h2 id="attention-heading">Needs attention</h2>
+                      <p class="panel-subtitle">Failures, reviews, and blocked work.</p>
+                    </div>
+                    <span class="count-chip" id="attention-count">0</span>
+                  </div>
+                  <div class="attention-list" id="attention-list"></div>
+                </section>
+
+                <section class="panel services-panel" aria-labelledby="services-heading">
+                  <div class="panel-head">
+                    <div>
+                      <h2 id="services-heading">System readiness</h2>
+                      <p class="panel-subtitle">Required services and optional integrations.</p>
+                    </div>
+                  </div>
+                  <div class="services-list" id="services-list"></div>
+                </section>
+              </div>
+            </div>
+
+            <section class="panel" aria-labelledby="activity-heading">
               <div class="panel-head">
-                <h2>Rendered drafts</h2>
-                <select id="queue-filter" class="input compact" aria-label="Filter by review status">
-                  <option value="">All statuses</option>
-                  <option value="pending">Pending</option>
-                  <option value="approved">Approved</option>
-                  <option value="changes_requested">Changes requested</option>
-                  <option value="rejected">Rejected</option>
+                <div>
+                  <h2 id="activity-heading">Recent activity</h2>
+                  <p class="panel-subtitle">Latest agent runs across the pipeline.</p>
+                </div>
+                <a class="text-link" href="#/runs">View all runs</a>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Stage</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Items</th>
+                      <th scope="col">Duration</th>
+                      <th scope="col">Started</th>
+                      <th scope="col">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody id="overview-runs-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" id="view-queue" data-view-panel="queue" hidden>
+            <div class="queue-layout">
+              <section class="panel queue-panel" aria-labelledby="queue-heading">
+                <div class="panel-head">
+                  <div>
+                    <h2 id="queue-heading">Review queue</h2>
+                    <p class="panel-subtitle">Rendered drafts awaiting an editorial decision.</p>
+                  </div>
+                  <label class="sr-only" for="queue-filter">Filter by review status</label>
+                  <select id="queue-filter" class="input compact">
+                    <option value="">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="changes_requested">Changes requested</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </div>
+                <div class="review-list" id="review-list" aria-live="polite"></div>
+              </section>
+
+              <article class="panel detail-panel" id="review-detail" aria-live="polite">
+                <div class="empty-state">
+                  <span class="empty-glyph" aria-hidden="true">◎</span>
+                  <h2>Select a draft</h2>
+                  <p>Inspect sources, claims, script, scenes, and quality gates before approving or rejecting.</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" id="view-runs" data-view-panel="runs" hidden>
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Run a stage</h2>
+                  <p class="panel-subtitle">
+                    Manual triggers are safe to repeat. Completed work is skipped by each agent.
+                  </p>
+                </div>
+                <span class="muted">Async dispatch + audit polling</span>
+              </div>
+              <div class="run-actions" id="run-actions"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Recent agent runs</h2>
+                  <p class="panel-subtitle">Audit trail for scheduled and manual executions.</p>
+                </div>
+                <label class="sr-only" for="runs-filter">Filter by stage</label>
+                <select id="runs-filter" class="input compact">
+                  <option value="">All stages</option>
                 </select>
               </div>
-              <div id="review-list" class="review-list" aria-live="polite"></div>
-            </div>
-            <article class="panel detail-panel" id="review-detail">
-              <div class="empty-state">
-                <div class="empty-glyph">◎</div>
-                <h2>Select a draft</h2>
-                <p>Inspect sources, claims, script, scenes, and quality gates before approving or rejecting.</p>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Stage</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Items</th>
+                      <th scope="col">Duration</th>
+                      <th scope="col">Started</th>
+                      <th scope="col">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody id="runs-body"></tbody>
+                </table>
               </div>
-            </article>
-          </div>
-        </section>
+            </section>
+          </section>
 
-        <section id="view-runs" class="view" hidden>
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Run a workflow stage</h2>
-              <span class="muted">Manual triggers are safe to repeat; completed stages are skipped.</span>
-            </div>
-            <div class="run-actions" id="run-actions"></div>
-          </div>
-          <div class="panel">
-            <div class="panel-head"><h2>Recent agent runs</h2></div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Stage</th><th>Status</th><th>Seen</th><th>Created</th><th>Updated</th><th>Started</th><th>Errors / warnings</th></tr></thead>
-                <tbody id="runs-body"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
+          <section class="view" id="view-publishing" data-view-panel="publishing" hidden>
+            <div class="metric-grid compact-metrics" id="publishing-stats"></div>
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Publishing records</h2>
+                  <p class="panel-subtitle">Approved artifacts queued for local export or external delivery.</p>
+                </div>
+                <button class="button ghost" id="run-publishing-button" type="button">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>
+                  <span>Process queue</span>
+                </button>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Title</th>
+                      <th scope="col">Platform</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Attempts</th>
+                      <th scope="col">External result</th>
+                      <th scope="col">Updated</th>
+                      <th scope="col"><span class="sr-only">Actions</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="publishing-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
 
-        <section id="view-publishing" class="view" hidden>
-          <div class="stat-grid" id="publishing-stats"></div>
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Publishing records</h2>
-              <button class="button" id="run-publishing-button">Process queue</button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Title</th><th>Platform</th><th>Status</th><th>Attempts</th><th>External result</th><th>Updated</th><th></th></tr></thead>
-                <tbody id="publishing-body"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section id="view-articles" class="view" hidden>
-          <div class="panel">
-            <div class="panel-head"><h2>Collected articles</h2><span class="muted">Source evidence is never deleted.</span></div>
-            <div id="articles-list" class="article-grid"></div>
-          </div>
-        </section>
-      </main>
+          <section class="view" id="view-articles" data-view-panel="articles" hidden>
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Collected articles</h2>
+                  <p class="panel-subtitle">Source evidence is never deleted.</p>
+                </div>
+                <span class="count-chip" id="articles-count">0</span>
+              </div>
+              <div class="article-grid" id="articles-list"></div>
+            </section>
+          </section>
+        </main>
+      </div>
     </div>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
     <script src="/dashboard/app.js"></script>
   </body>
 </html>

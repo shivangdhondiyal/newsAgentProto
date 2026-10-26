@@ -19,6 +19,7 @@ from backend.app.agents.credibility.providers import (
     OllamaClaimExtractor,
 )
 from backend.app.agents.credibility.trust import SourceTrustPolicy
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.independence import publisher_identity
 from backend.app.core.config import Settings
 from backend.app.db.models import AgentRun, Article, CredibilityAssessment, CredibilityEvidence
@@ -106,7 +107,7 @@ class CredibilityAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return CredibilityRunRead.model_validate(run)
 
     async def _load_unassessed_articles(self, session: AsyncSession) -> list[Article]:

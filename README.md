@@ -74,7 +74,7 @@ uvicorn backend.app.main:app --reload
 
 Open the editorial dashboard at <http://127.0.0.1:8000/dashboard>. The API documentation is at <http://127.0.0.1:8000/docs>.
 
-The dashboard loads the review queue, source/evidence provenance, script and scene editors, quality checks, approval controls, publishing records, agent runs, and the article library.
+The dashboard is an editorial operations console with five workspaces: a command center (pipeline health, attention items, service readiness, recent runs), the review queue (source/evidence provenance, script and scene editors, quality checks, approval controls), agent runs, publishing records, and the article library. Stage actions are asynchronous: the UI triggers a stage, polls its agent run, and refreshes counts when it completes.
 
 ### Project-local media tools (Windows)
 
@@ -99,7 +99,7 @@ See [`docs/local-tools.md`](docs/local-tools.md) for download and verification c
 
 ### Typical editorial run
 
-1. Use **Advance pipeline** in the dashboard, or call the run endpoints in order: collection, deduplication, credibility, research, script writer, scene planner, TTS, video generator.
+1. Use **Advance pipeline** in the dashboard to run deduplication through video rendering in order, or trigger individual stages. Collection and publishing stay explicit: run **Collect news** to fetch feeds and **Process queue** after approving drafts.
 2. Open a rendered draft in **Review queue** and inspect sources, claims, evidence, script, scenes, and quality checks.
 3. Approve, reject, or request changes. Rejection and change requests require notes.
 4. Approved drafts can be queued for `local` export (no credentials required) or YouTube (if OAuth credentials are configured).
@@ -126,14 +126,16 @@ Credentials stay in `.env` or a secret manager. The adapter never requests a pas
 
 | Area | Endpoints |
 | --- | --- |
-| Workflow triggers | `POST /api/v1/{collection,deduplication,credibility,research,script-writer,scene-planner,tts,video-generator}/runs` |
+| Workflow triggers | `POST /api/v1/workflow/runs` with `{"stage": "<key>"}` (async, 202) plus the synchronous per-agent `POST /api/v1/{collection,deduplication,credibility,research,script-writer,scene-planner,tts,video-generator}/runs` compatibility endpoints |
 | Articles and provenance | `GET /api/v1/articles`, `/articles/{id}/credibility`, `/articles/{id}/research`, `/articles/{id}/script` |
 | Review | `GET /api/v1/reviews`, `/reviews/analytics`, `/reviews/{video_render_id}`, `POST /reviews/{video_render_id}/decision`, `PATCH /reviews/scripts/{id}`, `PATCH /reviews/scenes/{id}`, `GET /reviews/videos/{id}/file` |
-| Publishing | `POST /api/v1/publishing/queue`, `/publishing/runs`, `GET /publishing/records`, `/publishing/analytics`, `POST /publishing/records/{id}/retry` |
-| Operations | `GET /api/v1/agent-runs`, `/approval-events`, `/system/status` |
+| Publishing | `POST /api/v1/publishing/queue`, `/publishing/runs`, `GET /publishing/records`, `/publishing/analytics`, `GET /publishing/records/{id}/file` (local export), `POST /publishing/records/{id}/retry` |
+| Operations | `GET /api/v1/agent-runs`, `/approval-events`, `/system/status`, `/system/overview` |
 | Dashboard | `GET /dashboard` and its static assets |
 
-`/system/status` reports scheduler state, journal counts, and capability readiness for video FFmpeg, TTS FFmpeg, Piper, local embeddings, local publishing, and YouTube credentials.
+`/system/status` reports scheduler state, journal counts, and capability readiness for video FFmpeg, TTS FFmpeg, Piper, local embeddings, local publishing, and YouTube credentials. `/system/overview` is the command-center feed: 24-hour collection, pipeline counts and latest-run status, current attention items, recent runs, service health, and last sync.
+
+Concurrent triggers for the same agent are rejected with `409`, and a second manual trigger cannot overlap a scheduler run. Runs left `running` by an unclean shutdown are marked failed during startup reconciliation.
 
 ## Configuration
 

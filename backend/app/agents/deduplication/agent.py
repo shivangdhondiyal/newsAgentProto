@@ -15,6 +15,7 @@ from backend.app.agents.deduplication.embeddings import (
     SentenceTransformerEmbeddingProvider,
     cosine_similarity,
 )
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.core.config import Settings
 from backend.app.db.models import (
     AgentRun,
@@ -106,7 +107,7 @@ class DeduplicationAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return DeduplicationRunRead.model_validate(run)
 
     async def _load_unembedded_articles(self, session: AsyncSession) -> list[Article]:

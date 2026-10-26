@@ -8,6 +8,7 @@ from time import perf_counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.script_writer.contracts import ScriptDraft, ScriptWriter
 from backend.app.agents.script_writer.writers import ExtractiveScriptWriter, OllamaScriptWriter
 from backend.app.core.config import Settings
@@ -94,7 +95,7 @@ class ScriptWriterAgent:
                 await session.refresh(run)
 
         if run.status == "failed":
-            raise RuntimeError(run.errors[-1])
+            raise AgentRunFailed(self.name, run.id, run.errors[-1], run.errors)
         return ScriptRunRead.model_validate(run)
 
     async def _load_eligible_articles(

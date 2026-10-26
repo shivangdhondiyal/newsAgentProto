@@ -17,12 +17,13 @@ This document records what has been verified in the repository, what is complete
 | 9 | Review dashboard, quality gate, hash-pinned approval, audited editing, downstream invalidation | `tests/test_review_workflow.py`, `tests/test_dashboard.py`, routed flow in `tests/test_api_integration.py` |
 | 10 | Approval-gated publishing, local export, optional YouTube upload, retries, analytics | `tests/test_publishing.py`, routed flow in `tests/test_api_integration.py` |
 
-Latest verified local run:
+Latest verified local run (2026-10-27):
 
 ```text
-pytest: 39 passed
+pytest: 44 passed
 ruff: All checks passed
 node --check frontend/app.js: passed
+Lighthouse (dashboard overview and review): accessibility 100, best practices 100, SEO 100
 ```
 
 Run the same checks with:
@@ -70,6 +71,17 @@ Publishing:            local export succeeded with metadata manifest
 The run confirmed publisher-level independence in practice: BBC World and BBC Technology were grouped as one publisher, and corroborated stories drew on up to four distinct publisher groups. It also verified the NPR fix: NPR article pages now return normally with the default `NewsAutomationPlatform/0.1` user agent, after the previous placeholder contact string caused read timeouts.
 
 The `.env` file used by this workspace points at the project-local binaries. `.tools/`, `models/*`, and `.env` are ignored by Git; see [`local-tools.md`](local-tools.md) to reproduce the setup.
+
+## Editorial operations dashboard rewrite (2026-10-27)
+
+The dashboard was rebuilt as a command center over the existing API, without mocks or schema changes:
+
+- **Stability:** a process-local per-agent coordinator rejects overlapping manual and scheduled runs (`409`), workflow triggers are asynchronous (`202` + poll), and startup reconciliation marks orphaned `running` agent runs as failed with a diagnostic message. SQLite now uses WAL, foreign keys, a busy timeout, and a 30-second connection timeout.
+- **Operations feed:** `GET /api/v1/system/overview` returns real 24-hour collection counts, per-stage counts and latest-run status, attention items (only the latest failure per agent), recent runs, service readiness, journal counts, and last sync.
+- **Workspaces:** hash-routed Overview, Review queue, Agent runs, Publishing, and Articles views share a token-based dark design system. Stage cards trigger their own stage, show running/success/error state, prevent duplicate submissions, and skip completed stages. **Advance pipeline** runs deduplication through video; collection and publishing remain explicit.
+- **Review and publishing:** evidence/script/storyboard/quality tabs, guarded decisions, unsaved-change protection, local export downloads via `GET /api/v1/publishing/records/{id}/file`, and a single publishing record per draft.
+
+Live verification on 2026-10-27 used the real local database and toolchain: deduplication completed via a stage card (14 created, 2 updated), **Advance pipeline** processed seven stages end-to-end, TTS produced five narrations, video produced three renders, one draft passed the 6/6 quality gate and was approved, its local export was queued and processed (`exported`, 1 attempt, 503,311-byte MP4), and the export file was served with `video/mp4`. Overview metrics, attention items, recent runs, review tabs, filters, and all five views were checked at 1000px and via same-origin probes at 360, 390, and 768px with no page overflow. No console errors or failed requests were observed.
 
 ## Environment-dependent or not verified end-to-end
 
