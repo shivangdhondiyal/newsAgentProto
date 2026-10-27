@@ -420,3 +420,173 @@ class PublishingRecord(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VisualAsset(Base):
+    """A downloaded, validated media asset with durable provenance and licensing."""
+
+    __tablename__ = "visual_assets"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_asset_id", name="uq_visual_asset_provider_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    provider_asset_id: Mapped[str] = mapped_column(String(255))
+    query: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    download_url: Mapped[str] = mapped_column(Text)
+    creator: Mapped[str | None] = mapped_column(Text, nullable=True)
+    license_name: Mapped[str] = mapped_column(String(255))
+    license_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attribution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str] = mapped_column(String(40), default="image")
+    local_path: Mapped[str] = mapped_column(Text)
+    mime_type: Mapped[str] = mapped_column(String(100))
+    file_size: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    focal_x: Mapped[float] = mapped_column(Float, default=0.5)
+    focal_y: Mapped[float] = mapped_column(Float, default=0.5)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="valid", index=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SceneAsset(Base):
+    """The chosen visual for one scene, including explicit designed fallbacks."""
+
+    __tablename__ = "scene_assets"
+    __table_args__ = (UniqueConstraint("scene_id", "role", name="uq_scene_asset_role"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey("scenes.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("visual_assets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    role: Mapped[str] = mapped_column(String(30), default="primary")
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0)
+    match_reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="ready", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AudioMaster(Base):
+    """Mastered narration audio and the validation evidence for it."""
+
+    __tablename__ = "audio_masters"
+    __table_args__ = (
+        UniqueConstraint("narration_audio_id", name="uq_audio_master_narration"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    narration_audio_id: Mapped[str] = mapped_column(
+        ForeignKey("narration_audio.id", ondelete="CASCADE"), index=True
+    )
+    raw_wav_path: Mapped[str] = mapped_column(Text)
+    mastered_wav_path: Mapped[str] = mapped_column(Text)
+    music_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
+    duration_seconds: Mapped[float] = mapped_column(Float)
+    sample_rate: Mapped[int] = mapped_column(Integer)
+    channels: Mapped[int] = mapped_column(Integer)
+    integrated_lufs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    true_peak_dbtp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    checks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class VideoVariant(Base):
+    """An aspect-ratio-specific render derived from one canonical VideoRender."""
+
+    __tablename__ = "video_variants"
+    __table_args__ = (
+        UniqueConstraint("video_render_id", "aspect_ratio", name="uq_video_variant_aspect"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    video_render_id: Mapped[str] = mapped_column(
+        ForeignKey("video_renders.id", ondelete="CASCADE"), index=True
+    )
+    aspect_ratio: Mapped[str] = mapped_column(String(10), index=True)
+    style_key: Mapped[str] = mapped_column(String(60), index=True)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    fps: Mapped[int] = mapped_column(Integer)
+    video_path: Mapped[str] = mapped_column(Text)
+    subtitle_path: Mapped[str] = mapped_column(Text)
+    timeline_path: Mapped[str] = mapped_column(Text)
+    duration_seconds: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    checks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionJob(Base):
+    """A resumable, one-click production run with persisted configuration."""
+
+    __tablename__ = "production_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    current_stage: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    article_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    script_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    video_render_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    style_key: Mapped[str] = mapped_column(String(60), default="broadcast")
+    aspect_ratio: Mapped[str] = mapped_column(String(10), default="both")
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    requested_by: Mapped[str] = mapped_column(String(120), default="operator")
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    logs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionStage(Base):
+    """One persisted stage of a production job, including retries and logs."""
+
+    __tablename__ = "production_stages"
+    __table_args__ = (
+        UniqueConstraint("job_id", "key", name="uq_production_stage_job_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("production_jobs.id", ondelete="CASCADE"), index=True
+    )
+    key: Mapped[str] = mapped_column(String(50), index=True)
+    label: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    logs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+

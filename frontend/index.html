@@ -51,6 +51,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
             <span class="nav-label">Overview</span>
           </a>
+          <a class="nav-item" data-view="production" href="#/production">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            <span class="nav-label">Video studio</span>
+          </a>
           <a class="nav-item" data-view="queue" href="#/review">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m8 12 3 3 5-6" /></svg>
             <span class="nav-label">Review queue</span>
@@ -143,7 +147,7 @@
                 <div class="panel-head">
                   <div>
                     <h2 id="pipeline-heading">Editorial pipeline</h2>
-                    <p class="panel-subtitle">Nine bounded stages from discovery to distribution.</p>
+                    <p class="panel-subtitle">Ten bounded stages from discovery to distribution.</p>
                   </div>
                   <span class="muted" id="pipeline-summary"></span>
                 </div>
@@ -196,6 +200,172 @@
                   </thead>
                   <tbody id="overview-runs-body"></tbody>
                 </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" id="view-production" data-view-panel="production" hidden>
+            <div class="production-layout">
+              <section class="panel production-config-panel" aria-labelledby="production-config-heading">
+                <div class="panel-head">
+                  <div>
+                    <h2 id="production-config-heading">Generate a complete news video</h2>
+                    <p class="panel-subtitle">
+                      One action builds the script, scene plan, sourced visuals, mastered
+                      narration, and both aspect-ratio renders.
+                    </p>
+                  </div>
+                  <span class="muted" id="production-config-state">Loading…</span>
+                </div>
+                <form class="form-grid" id="production-form">
+                  <div class="form-row">
+                    <label for="prod-story">Story</label>
+                    <select id="prod-story"></select>
+                    <p class="field-hint" id="prod-story-hint"></p>
+                  </div>
+
+                  <div class="form-row two">
+                    <div class="form-row">
+                      <label for="prod-style">Editing style</label>
+                      <select id="prod-style"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="prod-aspect">Output format</label>
+                      <select id="prod-aspect">
+                        <option value="both">Both 16:9 and 9:16</option>
+                        <option value="16:9">16:9 landscape</option>
+                        <option value="9:16">9:16 vertical</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="form-row two">
+                    <div class="form-row">
+                      <label for="prod-asset-strategy">Visual assets</label>
+                      <select id="prod-asset-strategy"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="prod-destination">Destination</label>
+                      <select id="prod-destination">
+                        <option value="local">Local export</option>
+                        <option value="youtube">YouTube (needs credentials)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="form-row two">
+                    <div class="form-row">
+                      <label for="prod-voice">Narration voice</label>
+                      <input class="input" id="prod-voice" type="text" readonly />
+                    </div>
+                    <div class="form-row">
+                      <label for="prod-music">Licensed music file (optional)</label>
+                      <input
+                        class="input"
+                        id="prod-music"
+                        type="text"
+                        placeholder="assets/music/track.mp3"
+                      />
+                    </div>
+                  </div>
+
+                  <label class="checkbox-row">
+                    <input id="prod-captions" type="checkbox" checked />
+                    <span>Burn aspect-aware captions into both renders</span>
+                  </label>
+
+                  <label class="checkbox-row">
+                    <input id="prod-renarrate" type="checkbox" />
+                    <span>Re-narrate this script with the current voice and mastering chain</span>
+                  </label>
+
+                  <div class="style-summary" id="prod-style-summary" aria-live="polite"></div>
+
+                  <div class="form-actions">
+                    <button class="button primary" id="prod-generate" type="submit">
+                      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z" /></svg>
+                      <span>Generate complete news video</span>
+                    </button>
+                    <button class="button ghost" id="prod-refresh" type="button">
+                      <svg class="icon spin-target" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
+                      <span>Refresh</span>
+                    </button>
+                    <span class="muted" id="prod-form-note">
+                      Progress is saved after every stage; retries resume where work stopped.
+                    </span>
+                  </div>
+                </form>
+              </section>
+
+              <div class="side-stack">
+                <section class="panel" aria-labelledby="prod-readiness-heading">
+                  <div class="panel-head">
+                    <div>
+                      <h2 id="prod-readiness-heading">Production readiness</h2>
+                      <p class="panel-subtitle">Local tools, providers, and licensing.</p>
+                    </div>
+                  </div>
+                  <div class="services-list" id="prod-readiness"></div>
+                  <p class="licensing-note" id="prod-licensing"></p>
+                </section>
+
+                <section class="panel" aria-labelledby="prod-jobs-heading">
+                  <div class="panel-head">
+                    <div>
+                      <h2 id="prod-jobs-heading">Recent jobs</h2>
+                      <p class="panel-subtitle">Inspect or resume a production run.</p>
+                    </div>
+                  </div>
+                  <div class="production-job-list" id="prod-jobs"></div>
+                </section>
+              </div>
+            </div>
+
+            <section class="panel production-job-panel" aria-labelledby="prod-job-heading">
+              <div class="empty-state" id="prod-job-empty">
+                <span class="empty-glyph" aria-hidden="true">◎</span>
+                <h2>No production selected</h2>
+                <p>
+                  Choose a story above and generate a video. The studio will show each
+                  stage, scene preview, licensing record, and both finished renders.
+                </p>
+              </div>
+              <div id="prod-job-body" hidden>
+                <div class="panel-head">
+                  <div>
+                    <h2 id="prod-job-heading">Production run</h2>
+                    <p class="panel-subtitle" id="prod-job-subtitle"></p>
+                  </div>
+                  <div class="chips" id="prod-job-chips"></div>
+                </div>
+
+                <div class="production-progress" role="status" aria-live="polite">
+                  <div class="progress-track">
+                    <div class="progress-fill" id="prod-progress-fill"></div>
+                  </div>
+                  <span class="muted" id="prod-progress-text"></span>
+                </div>
+
+                <div class="production-stages" id="prod-stages"></div>
+                <div class="production-actions" id="prod-job-actions"></div>
+                <div class="production-error error-text" id="prod-job-error" hidden></div>
+                <div class="production-warnings" id="prod-job-warnings" hidden></div>
+
+                <div class="production-columns">
+                  <section aria-labelledby="prod-scenes-heading">
+                    <h3 id="prod-scenes-heading">Scene previews</h3>
+                    <div class="production-scenes" id="prod-scenes"></div>
+                  </section>
+                  <section aria-labelledby="prod-variants-heading">
+                    <h3 id="prod-variants-heading">Finished artifacts</h3>
+                    <div class="production-variants" id="prod-variants"></div>
+                  </section>
+                </div>
+
+                <details class="production-log" open>
+                  <summary>Stage log</summary>
+                  <ol id="prod-logs"></ol>
+                </details>
               </div>
             </section>
           </section>

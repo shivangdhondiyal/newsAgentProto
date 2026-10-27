@@ -55,15 +55,21 @@ STAGE_SPECS: tuple[StageSpec, ...] = (
         agent_name="scene_planner",
     ),
     StageSpec(
+        key="assets",
+        label="Source visuals",
+        description="Retrieve licensed, validated imagery or record a designed fallback.",
+        agent_name="asset_retriever",
+    ),
+    StageSpec(
         key="tts",
         label="Narrate",
-        description="Synthesize scene narration into local audio.",
+        description="Synthesize mastered narration with sentence and paragraph pacing.",
         agent_name="tts",
     ),
     StageSpec(
         key="video",
         label="Render video",
-        description="Compose audio, scenes, and subtitles into a draft MP4.",
+        description="Compose scene graphics, motion, captions, and audio into MP4 variants.",
         agent_name="video_generator",
     ),
     StageSpec(

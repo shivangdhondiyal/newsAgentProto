@@ -44,15 +44,21 @@
       agentName: "scene_planner",
     },
     {
+      key: "assets",
+      label: "Source visuals",
+      description: "Retrieve licensed imagery or record a designed fallback.",
+      agentName: "asset_retriever",
+    },
+    {
       key: "tts",
       label: "Narrate",
-      description: "Synthesize scene narration into local audio.",
+      description: "Synthesize mastered narration with sentence and paragraph pacing.",
       agentName: "tts",
     },
     {
       key: "video",
       label: "Render video",
-      description: "Compose audio, scenes, and subtitles into a draft MP4.",
+      description: "Compose scene graphics, motion, captions, and audio into MP4 variants.",
       agentName: "video_generator",
     },
     {
@@ -79,6 +85,13 @@
       eyebrow: "Operations",
       title: "Command center",
       description: "What is happening, what needs attention, and what to do next.",
+    },
+    production: {
+      path: "production",
+      eyebrow: "Production studio",
+      title: "Generate a complete news video",
+      description:
+        "One action builds the script, scenes, sourced visuals, mastered narration, and 16:9 + 9:16 renders.",
     },
     queue: {
       path: "review",
@@ -128,6 +141,15 @@
     stageBusy: new Set(),
     stageErrors: new Map(),
     lastQueueFilter: "",
+    production: {
+      config: null,
+      stories: [],
+      jobs: [],
+      job: null,
+      selectedJobId: null,
+      pollTimer: null,
+      loading: false,
+    },
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -232,9 +254,12 @@
     running: "info",
     queued: "info",
     processing: "info",
+    awaiting_approval: "info",
     draft: "muted",
     idle: "muted",
     unknown: "muted",
+    interrupted: "warning",
+    skipped: "muted",
   };
 
   function statusTone(status) {
@@ -2390,8 +2415,685 @@
     }
   }
 
+  // ---------------------------------------------------------------- production
+
+  const JOB_ACTIVE = new Set(["queued", "running"]);
+  const STAGE_TONES = {
+    queued: "muted",
+    running: "info",
+    completed: "success",
+    failed: "danger",
+    interrupted: "warning",
+  };
+
+  function productionState() {
+    return state.production;
+  }
+
+  function selectedStyle() {
+    const key = $("#prod-style")?.value;
+    return (productionState().config?.styles || []).find(
+      (style) => style.key === key,
+    );
+  }
+
+  function renderProductionStyleSummary() {
+    const summary = $("#prod-style-summary");
+    const style = selectedStyle();
+    if (!summary) return;
+    if (!style) {
+      summary.innerHTML = `<p class="muted">Choose an editing style to see its craft rules.</p>`;
+      return;
+    }
+    const craft = style.craft || {};
+    const shots = Array.isArray(craft.shot_mix) ? craft.shot_mix.join(" → ") : "—";
+    summary.innerHTML = `
+      <div class="style-summary-head">
+        <strong>${esc(style.name)}</strong>
+        <span class="muted">${esc(style.best_for || "")}</span>
+      </div>
+      <p class="style-summary-copy">${esc(style.description || "")}</p>
+      <div class="chips">
+        <span class="chip">${esc(style.transition)} transitions</span>
+        <span class="chip">${esc(style.motion)} motion</span>
+        <span class="chip">${esc(style.caption_style)} captions</span>
+        <span class="chip">${esc(style.music)} music</span>
+      </div>
+      <dl class="style-craft">
+        <div><dt>Shot mix</dt><dd>${esc(shots)}</dd></div>
+        <div><dt>Cut rhythm</dt><dd>${esc(craft.cut_rhythm || "—")}</dd></div>
+        <div><dt>Color</dt><dd>${esc(craft.color_grade || "—")}</dd></div>
+        <div><dt>Graphics</dt><dd>${esc((style.graphics || []).join(", "))}</dd></div>
+        <div><dt>Safe area</dt><dd>${esc(craft.safe_area_note || "—")}</dd></div>
+      </dl>`;
+  }
+
+  function renderProductionConfig() {
+    const config = productionState().config;
+    if (!config) return;
+    const prod = productionState();
+    const styleSelect = $("#prod-style");
+    if (styleSelect && !styleSelect.options.length) {
+      styleSelect.innerHTML = config.styles
+        .map(
+          (style) =>
+            `<option value="${esc(style.key)}">${esc(style.name)}</option>`,
+        )
+        .join("");
+    }
+    const assetSelect = $("#prod-asset-strategy");
+    if (assetSelect && !assetSelect.options.length) {
+      assetSelect.innerHTML = `
+        <option value="hybrid">Licensed photos with designed fallbacks</option>
+        <option value="licensed_only">Licensed photos only</option>
+        <option value="graphics_only">Designed graphics only</option>`;
+    }
+    if (!prod.defaultsApplied) {
+      const defaults = config.defaults || {};
+      if (styleSelect && defaults.style_key) styleSelect.value = defaults.style_key;
+      const aspect = $("#prod-aspect");
+      if (aspect && defaults.aspect_ratio) aspect.value = defaults.aspect_ratio;
+      const captions = $("#prod-captions");
+      if (captions) captions.checked = defaults.captions !== false;
+      if (assetSelect && defaults.asset_strategy) {
+        assetSelect.value = defaults.asset_strategy;
+      }
+      const destination = $("#prod-destination");
+      if (destination && defaults.destination) {
+        destination.value = defaults.destination;
+      }
+      prod.defaultsApplied = true;
+    }
+    const voice = $("#prod-voice");
+    if (voice) voice.value = config.voice_name || "Piper voice";
+    const music = $("#prod-music");
+    if (music && !music.placeholder) {
+      music.placeholder = `${config.music_dir}/track.mp3`;
+    }
+    renderProductionReadiness();
+    renderProductionStyleSummary();
+  }
+
+  function renderProductionReadiness() {
+    const config = productionState().config;
+    const list = $("#prod-readiness");
+    if (!config || !list) return;
+    const rows = [
+      {
+        label: "FFmpeg",
+        ready: config.ffmpeg_available,
+        detail: "Scene rendering, crossfades, and loudness mastering",
+      },
+      {
+        label: "Piper voice",
+        ready: config.piper_available,
+        detail: config.voice_name || "Local narration",
+      },
+      {
+        label: "Captions",
+        ready: config.captions_available,
+        detail: "Aspect-aware, inside the safe area",
+      },
+      {
+        label: "Asset providers",
+        ready: (config.asset_providers || []).length > 0,
+        detail: (config.asset_providers || []).join(", ") || "None configured",
+      },
+    ];
+    list.innerHTML = rows
+      .map(
+        (row) => `<div class="service-row">
+          ${statusDot(row.ready ? "success" : "warning")}
+          <div>
+            <p class="service-name">${esc(row.label)}</p>
+            <p class="service-detail">${esc(row.detail)}</p>
+          </div>
+        </div>`,
+      )
+      .join("");
+    const note = $("#prod-licensing");
+    if (note) note.textContent = config.licensing_note || "";
+    const stateLabel = $("#production-config-state");
+    if (stateLabel) {
+      const ready = config.ffmpeg_available && config.piper_available;
+      stateLabel.textContent = ready ? "Ready to produce" : "Setup required";
+    }
+  }
+
+  function storyLabel(story) {
+    const flags = [];
+    if (story.has_render) flags.push("rendered");
+    else if (story.has_narration) flags.push("narrated");
+    else if (story.has_scene_plan) flags.push("scenes planned");
+    if (story.production_ready === false) flags.push("blocked");
+    const suffix = flags.length ? ` · ${flags.join(", ")}` : "";
+    return `${story.title} — ${story.source_name}${suffix}`;
+  }
+
+  function selectedStory() {
+    const prod = productionState();
+    const id = $("#prod-story")?.value;
+    return prod.stories.find((story) => story.script_id === id);
+  }
+
+  function renderProductionStories() {
+    const prod = productionState();
+    const select = $("#prod-story");
+    const hint = $("#prod-story-hint");
+    if (!select) return;
+    const previous = select.value;
+    if (!prod.stories.length) {
+      select.innerHTML = `<option value="">No draft scripts available</option>`;
+      select.disabled = true;
+      if (hint) {
+        hint.textContent =
+          "Run the pipeline through the script stage to create a story.";
+      }
+      return;
+    }
+    select.disabled = false;
+    const ordered = [...prod.stories].sort(
+      (a, b) =>
+        Number(b.production_ready !== false) -
+        Number(a.production_ready !== false),
+    );
+    select.innerHTML = ordered
+      .map(
+        (story) =>
+          `<option value="${esc(story.script_id)}">${esc(storyLabel(story))}</option>`,
+      )
+      .join("");
+    if (ordered.some((story) => story.script_id === previous)) {
+      select.value = previous;
+    }
+    renderProductionStoryHint();
+  }
+
+  function renderProductionStoryHint() {
+    const hint = $("#prod-story-hint");
+    const story = selectedStory();
+    const button = $("#prod-generate");
+    if (!hint) return;
+    if (!story) {
+      hint.textContent = "";
+      if (button) button.disabled = false;
+      return;
+    }
+    const parts = [
+      `${story.estimated_duration_seconds}s script`,
+      story.credibility_status
+        ? `credibility: ${story.credibility_status}`
+        : "credibility: not scored",
+    ];
+    if (story.asset_ready || story.asset_fallback) {
+      parts.push(
+        `${story.asset_ready} licensed asset(s), ${story.asset_fallback} fallback(s)`,
+      );
+    }
+    hint.textContent = parts.join(" · ");
+    const blocking = story.blocking_reasons || [];
+    hint.dataset.tone = blocking.length ? "warning" : "";
+    if (blocking.length) {
+      hint.textContent = `${hint.textContent} · Blocked: ${blocking.join(" ")}`;
+    }
+    if (button) {
+      button.disabled = story.production_ready === false;
+      button.title = blocking.length ? blocking.join(" ") : "";
+    }
+  }
+
+  function renderProductionJobs() {
+    const prod = productionState();
+    const list = $("#prod-jobs");
+    if (!list) return;
+    if (!prod.jobs.length) {
+      list.innerHTML = `<p class="muted">No production jobs yet.</p>`;
+      return;
+    }
+    list.innerHTML = prod.jobs
+      .map((job) => {
+        const selected = prod.selectedJobId === job.id;
+        return `<button class="production-job-row ${selected ? "selected" : ""}" type="button" data-production-job="${esc(
+          job.id,
+        )}" ${selected ? 'aria-current="true"' : ""}>
+          <span class="production-job-main">
+            <strong>${esc(titleCase(job.style_key))} · ${esc(
+              job.aspect_ratio === "both" ? "16:9 + 9:16" : job.aspect_ratio,
+            )}</strong>
+            <small>${esc(fmtDate(job.created_at))}</small>
+          </span>
+          ${badge(job.status)}
+        </button>`;
+      })
+      .join("");
+  }
+
+  function frameUrl(jobId, aspect, position) {
+    const name = `scene-${String(position).padStart(3, "0")}.jpg`;
+    return `${API}/production/jobs/${encodeURIComponent(
+      jobId,
+    )}/frames/${encodeURIComponent(aspect)}/${name}`;
+  }
+
+  function assetMarkup(asset) {
+    if (!asset) {
+      return `<p class="muted">No asset decision recorded.</p>`;
+    }
+    if (asset.status === "fallback") {
+      return `<p class="production-asset-note">${esc(
+        asset.match_reason || "Designed graphic fallback",
+      )}</p>`;
+    }
+    const links = [
+      asset.license_url ? externalLink(asset.license_url, "License") : "",
+      asset.source_url ? externalLink(asset.source_url, "Source") : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return `<p class="production-asset-title">${esc(
+      asset.title || "Licensed asset",
+    )}</p>
+      <p class="production-asset-meta">${esc(
+        [asset.provider, asset.creator, asset.license_name]
+          .filter(Boolean)
+          .join(" · "),
+      )}</p>
+      ${links ? `<p class="production-asset-links">${links}</p>` : ""}`;
+  }
+
+  function variantMarkup(variant) {
+    return `<article class="variant-card">
+      <div class="variant-head">
+        <strong>${esc(variant.aspect_ratio)}</strong>
+        <span class="muted">${variant.width}×${variant.height} · ${fmtDuration(
+          variant.duration_seconds,
+        )}</span>
+      </div>
+      <video controls preload="metadata" src="${esc(variant.file_url)}"></video>
+      <div class="variant-actions">
+        <a class="button ghost small" href="${esc(
+          variant.file_url,
+        )}" download>Download MP4</a>
+        ${badge(variant.status)}
+      </div>
+    </article>`;
+  }
+
+  function scenePreviewMarkup(job, scene, aspects) {
+    const frames = aspects
+      .map((aspect) => {
+        const label = aspect === "16:9" ? "Landscape" : "Vertical";
+        return `<figure class="scene-frame" data-aspect="${esc(aspect)}">
+          <img src="${esc(
+            frameUrl(job.id, aspect, scene.position),
+          )}" alt="Scene ${scene.position} ${label} preview" loading="lazy" />
+          <figcaption>${esc(label)}</figcaption>
+        </figure>`;
+      })
+      .join("");
+    return `<article class="scene-preview">
+      <div class="scene-preview-head">
+        <span class="scene-number">${String(scene.position).padStart(2, "0")}</span>
+        <div>
+          <p class="scene-preview-subtitle">${esc(
+            scene.subtitle || scene.narration,
+          )}</p>
+          <p class="muted">${fmtDuration(scene.duration_seconds)} · ${esc(
+            scene.transition,
+          )}</p>
+        </div>
+      </div>
+      <div class="scene-frames">${frames}</div>
+      <div class="scene-license">${assetMarkup(scene.asset)}</div>
+    </article>`;
+  }
+
+  function renderProductionJob() {
+    const prod = productionState();
+    const job = prod.job;
+    const empty = $("#prod-job-empty");
+    const body = $("#prod-job-body");
+    if (!empty || !body) return;
+    if (!job) {
+      empty.hidden = false;
+      body.hidden = true;
+      return;
+    }
+    empty.hidden = true;
+    body.hidden = false;
+
+    const stages = job.stages || [];
+    const completed = stages.filter((stage) => stage.status === "completed").length;
+    const running = stages.find((stage) => stage.status === "running");
+    const failed = stages.find((stage) => stage.status === "failed");
+    const progress = stages.length
+      ? Math.round(((completed + (running ? 0.5 : 0)) / stages.length) * 100)
+      : 0;
+    const subtitle = $("#prod-job-subtitle");
+    if (subtitle) {
+      subtitle.textContent = [
+        job.title || job.article_title || "Production job",
+        `Style: ${titleCase(job.style_key)}`,
+        job.aspect_ratio === "both" ? "16:9 + 9:16" : job.aspect_ratio,
+        job.requested_by ? `Requested by ${job.requested_by}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    const chips = $("#prod-job-chips");
+    if (chips) {
+      chips.innerHTML = `${badge(job.status)}${
+        job.approval_status ? badge(job.approval_status) : ""
+      }`;
+    }
+    const fill = $("#prod-progress-fill");
+    if (fill) {
+      fill.style.width = `${progress}%`;
+      fill.dataset.tone = failed
+        ? "danger"
+        : job.status === "awaiting_approval" || job.status === "completed"
+          ? "success"
+          : "info";
+    }
+    const progressText = $("#prod-progress-text");
+    if (progressText) {
+      progressText.textContent = running
+        ? `${completed}/${stages.length} stages · ${running.label}`
+        : `${completed}/${stages.length} stages · ${titleCase(job.status)}`;
+    }
+    const stageList = $("#prod-stages");
+    if (stageList) {
+      stageList.innerHTML = stages
+        .map(
+          (stage) => `<div class="production-stage" data-status="${esc(
+            stage.status,
+          )}">
+            ${statusDot(STAGE_TONES[stage.status] || "muted")}
+            <div class="production-stage-main">
+              <strong>${esc(stage.label)}</strong>
+              <small>${esc(
+                stage.status === "completed"
+                  ? fmtRunDuration(stage.duration_ms)
+                  : stage.status === "running"
+                    ? "In progress"
+                    : stage.status === "failed"
+                      ? stage.error || "Failed"
+                      : "Waiting",
+              )}</small>
+            </div>
+            ${badge(stage.status)}
+          </div>`,
+        )
+        .join("");
+    }
+    const actions = $("#prod-job-actions");
+    if (actions) {
+      const retry =
+        job.status === "failed" || job.status === "interrupted"
+          ? `<button class="button small" type="button" data-retry-production="${esc(
+              job.id,
+            )}">Retry failed stage</button>`
+          : "";
+      const review = job.video_render_id
+        ? `<a class="button ghost small" href="#/review">Review and approve</a>`
+        : "";
+      actions.innerHTML = `${retry}${review}`;
+    }
+    const error = $("#prod-job-error");
+    if (error) {
+      error.hidden = !job.error;
+      error.textContent = job.error || "";
+    }
+    const aspects = (job.variants || []).map((variant) => variant.aspect_ratio);
+    const sceneList = $("#prod-scenes");
+    if (sceneList) {
+      if (!job.scenes?.length) {
+        sceneList.innerHTML = `<p class="muted">Scene previews appear after planning and rendering.</p>`;
+      } else if (!aspects.length) {
+        sceneList.innerHTML = `<p class="muted">Frames are generated during the render stage.</p>`;
+      } else {
+        sceneList.innerHTML = job.scenes
+          .map((scene) => scenePreviewMarkup(job, scene, aspects))
+          .join("");
+      }
+    }
+    const variantList = $("#prod-variants");
+    if (variantList) {
+      variantList.innerHTML = (job.variants || []).length
+        ? job.variants.map(variantMarkup).join("")
+        : `<p class="muted">Both aspect ratios appear here when rendering finishes.</p>`;
+    }
+    const logs = $("#prod-logs");
+    if (logs) {
+      const entries = (job.logs || []).slice(-14).reverse();
+      logs.innerHTML = entries.length
+        ? entries
+            .map(
+              (entry) => `<li data-tone="${esc(
+                statusTone(entry.level),
+              )}"><span>${esc(entry.message)}</span><small>${esc(
+                fmtDate(entry.at),
+              )}</small></li>`,
+            )
+            .join("")
+        : `<li><span class="muted">No log entries yet.</span></li>`;
+    }
+    if ((job.warnings || []).length) {
+      const warning = (job.warnings || [])
+        .map((item) => `<li>${esc(item)}</li>`)
+        .join("");
+      const warningNode = $("#prod-job-warnings");
+      if (warningNode) {
+        warningNode.hidden = false;
+        warningNode.innerHTML = `<strong>Review notes</strong><ul>${warning}</ul>`;
+      }
+    } else {
+      const warningNode = $("#prod-job-warnings");
+      if (warningNode) warningNode.hidden = true;
+    }
+  }
+
+  function renderProductionError(message) {
+    const empty = $("#prod-job-empty");
+    const body = $("#prod-job-body");
+    if (body) body.hidden = true;
+    if (empty) {
+      empty.hidden = false;
+      empty.innerHTML = `<span class="empty-glyph" aria-hidden="true">!</span>
+        <h2>Production studio unavailable</h2>
+        <p class="error-text">${esc(message)}</p>
+        <button class="button small mt-3" type="button" data-retry="production">Retry</button>`;
+      wireRetry("production", () => refreshCurrent({ manual: true }));
+    }
+  }
+
+  async function loadProductionJob(id, { silent = false } = {}) {
+    const job = await api(`/production/jobs/${encodeURIComponent(id)}`);
+    productionState().job = job;
+    productionState().selectedJobId = id;
+    renderProductionJob();
+    if (JOB_ACTIVE.has(job.status)) ensureProductionPolling();
+    return job;
+  }
+
+  async function loadProductionLists({ silent = false } = {}) {
+    const prod = productionState();
+    const [stories, jobs] = await Promise.all([
+      api("/production/stories"),
+      api("/production/jobs?limit=12"),
+    ]);
+    prod.stories = stories || [];
+    prod.jobs = jobs || [];
+    renderProductionStories();
+    renderProductionJobs();
+  }
+
+  async function loadProduction({ silent = false } = {}) {
+    const prod = productionState();
+    if (prod.loading) return false;
+    prod.loading = true;
+    try {
+      if (!prod.config) {
+        prod.config = await api("/production/config");
+        renderProductionConfig();
+      }
+      await loadProductionLists({ silent });
+      const target =
+        prod.selectedJobId &&
+        prod.jobs.some((job) => job.id === prod.selectedJobId)
+          ? prod.selectedJobId
+          : prod.jobs[0]?.id;
+      if (target) {
+        await loadProductionJob(target, { silent: true });
+      } else {
+        prod.job = null;
+        renderProductionJob();
+      }
+      return true;
+    } catch (error) {
+      renderProductionError(describeError(error));
+      return false;
+    } finally {
+      prod.loading = false;
+    }
+  }
+
+  function stopProductionPolling() {
+    const prod = productionState();
+    if (prod.pollTimer) {
+      window.clearInterval(prod.pollTimer);
+      prod.pollTimer = null;
+    }
+  }
+
+  function ensureProductionPolling() {
+    const prod = productionState();
+    if (prod.pollTimer) return;
+    prod.pollTimer = window.setInterval(async () => {
+      const job = productionState().job;
+      if (state.view !== "production" || !job || !JOB_ACTIVE.has(job.status)) {
+        stopProductionPolling();
+        return;
+      }
+      try {
+        const updated = await loadProductionJob(job.id, { silent: true });
+        if (!JOB_ACTIVE.has(updated.status)) {
+          stopProductionPolling();
+          await loadProductionLists({ silent: true });
+          toast(
+            updated.status === "awaiting_approval"
+              ? "Production finished. Review and approve the renders."
+              : `Production ${updated.status}.`,
+            updated.status === "awaiting_approval" ? "success" : "error",
+          );
+        }
+      } catch (error) {
+        stopProductionPolling();
+        toast(describeError(error), "error");
+      }
+    }, 4_000);
+  }
+
+  async function generateProduction(event) {
+    event.preventDefault();
+    const button = $("#prod-generate");
+    const scriptId = $("#prod-story")?.value;
+    if (!scriptId) {
+      toast("Choose a story with a draft script first.", "warning");
+      return;
+    }
+    const story = selectedStory();
+    if (story && story.production_ready === false) {
+      toast(
+        `This story is blocked: ${(story.blocking_reasons || []).join(" ")}`,
+        "warning",
+      );
+      return;
+    }
+    const payload = {
+      script_id: scriptId,
+      style_key: $("#prod-style")?.value || "broadcast",
+      aspect_ratio: $("#prod-aspect")?.value || "both",
+      captions: Boolean($("#prod-captions")?.checked),
+      asset_strategy: $("#prod-asset-strategy")?.value || "hybrid",
+      destination: $("#prod-destination")?.value || "local",
+      music_path: $("#prod-music")?.value.trim() || null,
+      regenerate_narration: Boolean($("#prod-renarrate")?.checked),
+    };
+    await withButton(button, "Starting production…", async () => {
+      const job = await api("/production/jobs", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await api(`/production/jobs/${encodeURIComponent(job.id)}/start`, {
+        method: "POST",
+      });
+      api("/production/defaults", {
+        method: "PATCH",
+        body: JSON.stringify({
+          style_key: payload.style_key,
+          aspect_ratio: payload.aspect_ratio,
+          captions: payload.captions,
+          asset_strategy: payload.asset_strategy,
+          destination: payload.destination,
+        }),
+      }).catch(() => {});
+      const prod = productionState();
+      prod.selectedJobId = job.id;
+      prod.job = job;
+      renderProductionJob();
+      ensureProductionPolling();
+      toast(
+        "Production started. Stages are saved as they complete, so a retry resumes where it stopped.",
+        "info",
+      );
+      await loadProductionLists({ silent: true });
+    });
+  }
+
+  async function retryProductionJob(id, button) {
+    await withButton(button, "Retrying…", async () => {
+      const job = await api(
+        `/production/jobs/${encodeURIComponent(id)}/retry`,
+        { method: "POST" },
+      );
+      productionState().job = job;
+      productionState().selectedJobId = id;
+      renderProductionJob();
+      ensureProductionPolling();
+      toast("Retrying the failed stage.", "info");
+    });
+  }
+
+  function wireProduction() {
+    $("#production-form")?.addEventListener("submit", generateProduction);
+    $("#prod-style")?.addEventListener("change", renderProductionStyleSummary);
+    $("#prod-story")?.addEventListener("change", renderProductionStoryHint);
+    $("#prod-refresh")?.addEventListener("click", () =>
+      refreshCurrent({ manual: true }),
+    );
+    $("#prod-jobs")?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-production-job]");
+      if (!button) return;
+      const id = button.dataset.productionJob;
+      if (!id) return;
+      try {
+        await loadProductionJob(id);
+        renderProductionJobs();
+      } catch (error) {
+        toast(describeError(error), "error");
+      }
+    });
+    $("#prod-job-body")?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-retry-production]");
+      if (!button) return;
+      await retryProductionJob(button.dataset.retryProduction, button);
+    });
+  }
+
   async function loadViewData(view, options = {}) {
     if (view === "overview") return loadOverview(options);
+    if (view === "production") return loadProduction(options);
     if (view === "queue") return loadQueue(options);
     if (view === "runs") return loadRuns(options);
     if (view === "publishing") return loadPublishing(options);
@@ -2441,6 +3143,7 @@
   async function showView(view) {
     const previousView = state.view;
     state.view = view;
+    if (view !== "production") stopProductionPolling();
     $$(".nav-item").forEach((item) => {
       const active = item.dataset.view === view;
       item.classList.toggle("active", active);
@@ -2560,6 +3263,7 @@
       refreshCurrent({ manual: true }),
     );
     $("#pipeline-button")?.addEventListener("click", advancePipeline);
+    wireProduction();
 
     const queueFilter = $("#queue-filter");
     if (queueFilter) {

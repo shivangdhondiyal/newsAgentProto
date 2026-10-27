@@ -9,6 +9,7 @@ htmlcov/
 data/
 logs/*.log
 assets/generated/
+assets/cache/
 assets/published/
 .pytest-tmp/
 .tools/

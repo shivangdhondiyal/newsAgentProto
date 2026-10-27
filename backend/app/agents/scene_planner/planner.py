@@ -1,41 +1,8 @@
-from __future__ import annotations
-
-import re
+﻿from __future__ import annotations
 
 from backend.app.agents.scene_planner.contracts import PlannedScene
 from backend.app.db.models import NewsScript
-
-STOP_WORDS = {
-    "about",
-    "after",
-    "against",
-    "also",
-    "and",
-    "are",
-    "been",
-    "being",
-    "by",
-    "for",
-    "from",
-    "has",
-    "have",
-    "here",
-    "into",
-    "its",
-    "known",
-    "more",
-    "report",
-    "said",
-    "that",
-    "the",
-    "their",
-    "this",
-    "time",
-    "was",
-    "were",
-    "what",
-    "with",
-}
+from backend.app.media.keywords import search_keywords
 
 
 class RuleBasedScenePlanner:
@@ -82,18 +49,11 @@ class RuleBasedScenePlanner:
             keywords=keywords,
             scene_description=description,
             stock_footage_query=f"{query} neutral news footage",
-            image_search_query=f"{query} editorial image",
+            image_search_query=query,
             animation_suggestion=animation,
             transition="fade" if position == 1 else "crossfade",
         )
 
     @staticmethod
     def _keywords(text: str) -> list[str]:
-        candidates = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]{2,}", text.lower())
-        unique: list[str] = []
-        for candidate in candidates:
-            if candidate not in STOP_WORDS and candidate not in unique:
-                unique.append(candidate)
-            if len(unique) == 5:
-                break
-        return unique
+        return search_keywords(text)

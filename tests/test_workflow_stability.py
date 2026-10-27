@@ -175,12 +175,13 @@ async def test_overview_uses_real_counts_and_pipeline_stages(tmp_path: Path) -> 
         assert response.status_code == 200
         payload = response.json()
 
-    assert len(payload["pipeline"]) == 9
+    assert len(payload["pipeline"]) == 10
     stages = {stage["key"]: stage for stage in payload["pipeline"]}
     assert stages["collection"]["count"] == 1
     assert stages["deduplication"]["count"] == 1
     assert stages["credibility"]["count"] == 0
     assert stages["scenes"]["count"] == 0
+    assert stages["assets"]["count"] == 1
     assert stages["video"]["count"] == 0
     assert stages["publishing"]["action_path"] == "/api/v1/workflow/runs"
 

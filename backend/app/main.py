@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from backend.app.agents.assets import AssetAgent
 from backend.app.agents.credibility import CredibilityAgent
 from backend.app.agents.credibility.trust import SourceTrustPolicy
 from backend.app.agents.deduplication import DeduplicationAgent
@@ -20,7 +21,7 @@ from backend.app.agents.scene_planner import ScenePlannerAgent
 from backend.app.agents.script_writer import ScriptWriterAgent
 from backend.app.agents.tts import TTSAgent
 from backend.app.agents.video import VideoGeneratorAgent
-from backend.app.api import dashboard, publishing, reviews, system, workflow
+from backend.app.api import dashboard, production, publishing, reviews, system, workflow
 from backend.app.api.routes import router
 from backend.app.core.config import get_settings
 from backend.app.core.logging import configure_logging
@@ -31,6 +32,10 @@ from backend.app.db.session import (
     reconcile_stale_agent_runs,
 )
 from backend.app.publishers.agent import PublishingAgent
+from backend.app.services.production import (
+    ProductionService,
+    reconcile_stale_production_jobs,
+)
 from backend.app.services.run_control import AgentRunCoordinator
 from backend.app.services.workflow_dispatch import WorkflowDispatcher, WorkflowStage
 from backend.app.services.workflow_stages import STAGE_SPECS
@@ -71,6 +76,7 @@ def _build_stages(app: FastAPI) -> list[WorkflowStage]:
         "research": app.state.research_agent.execute,
         "script_writer": app.state.script_writer_agent.execute,
         "scene_planner": app.state.scene_planner_agent.execute,
+        "asset_retriever": app.state.asset_agent.execute,
         "tts": app.state.tts_agent.execute,
         "video_generator": app.state.video_generator_agent.execute,
         "publishing": app.state.publishing_agent.execute,
@@ -104,6 +110,7 @@ async def lifespan(app: FastAPI):
     app.state.research_agent = ResearchAgent(settings, session_factory)
     app.state.script_writer_agent = ScriptWriterAgent(settings, session_factory)
     app.state.scene_planner_agent = ScenePlannerAgent(settings, session_factory)
+    app.state.asset_agent = AssetAgent(settings, session_factory)
     app.state.tts_agent = TTSAgent(settings, session_factory)
     app.state.video_generator_agent = VideoGeneratorAgent(settings, session_factory)
     app.state.publishing_agent = PublishingAgent(settings, session_factory)
@@ -114,9 +121,24 @@ async def lifespan(app: FastAPI):
     interrupted = await reconcile_stale_agent_runs(session_factory)
     if interrupted:
         logger.warning("Reconciled %s interrupted agent run(s)", interrupted)
+    interrupted_jobs = await reconcile_stale_production_jobs(session_factory)
+    if interrupted_jobs:
+        logger.warning(
+            "Reconciled %s interrupted production job(s)", interrupted_jobs
+        )
 
     coordinator = AgentRunCoordinator()
     app.state.run_coordinator = coordinator
+    app.state.production_service = ProductionService(
+        settings,
+        session_factory,
+        coordinator,
+        script_writer_agent=app.state.script_writer_agent,
+        scene_planner_agent=app.state.scene_planner_agent,
+        asset_agent=app.state.asset_agent,
+        tts_agent=app.state.tts_agent,
+        video_agent=app.state.video_generator_agent,
+    )
     app.state.workflow_dispatcher = WorkflowDispatcher(coordinator, _build_stages(app))
 
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -209,6 +231,7 @@ async def lifespan(app: FastAPI):
     finally:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+        await app.state.production_service.shutdown()
         await app.state.workflow_dispatcher.shutdown()
         await engine.dispose()
 
@@ -298,6 +321,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(router)
 app.include_router(workflow.router, prefix="/api/v1")
 app.include_router(reviews.router, prefix="/api/v1")
+app.include_router(production.router, prefix="/api/v1")
 app.include_router(publishing.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(dashboard.router)

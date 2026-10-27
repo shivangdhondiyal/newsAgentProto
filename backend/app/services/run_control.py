@@ -43,6 +43,7 @@ class AgentRunCoordinator:
         operation: Callable[[], Awaitable[T]],
         *,
         reject_if_busy: bool = False,
+        wait_if_busy: bool = False,
         label: str | None = None,
     ) -> T | None:
         """Run an operation under the agent's process-local lock.
@@ -50,10 +51,12 @@ class AgentRunCoordinator:
         Scheduled jobs pass ``reject_if_busy=False`` so a missed interval is skipped
         rather than queued behind a long manual run. HTTP triggers pass ``True`` so
         the caller receives an explicit conflict instead of a duplicate execution.
+        Production jobs pass ``wait_if_busy=True`` because their stages are sequential
+        and must complete rather than silently skip.
         """
 
         lock = self._lock_for(agent_name)
-        if lock.locked():
+        if lock.locked() and not wait_if_busy:
             if reject_if_busy:
                 raise RunInProgressError(agent_name, label)
             return None

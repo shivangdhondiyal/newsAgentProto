@@ -24,6 +24,8 @@ from backend.app.db.models import (
     NewsScript,
     PublishingRecord,
     ResearchBrief,
+    Scene,
+    SceneAsset,
     ScenePlan,
     VideoRender,
 )
@@ -220,6 +222,19 @@ async def system_overview(
         .select_from(NewsScript)
         .where(NewsScript.status == "draft", script_without_plan),
     )
+    awaiting_assets = await _count(
+        session,
+        select(func.count())
+        .select_from(Scene)
+        .join(ScenePlan, ScenePlan.id == Scene.scene_plan_id)
+        .join(NewsScript, NewsScript.id == ScenePlan.script_id)
+        .outerjoin(SceneAsset, SceneAsset.scene_id == Scene.id)
+        .where(
+            NewsScript.status == "draft",
+            ScenePlan.status == "draft",
+            SceneAsset.id.is_(None),
+        ),
+    )
     awaiting_tts = await _count(
         session,
         select(func.count())
@@ -321,6 +336,7 @@ async def system_overview(
         "research": awaiting_research,
         "script": awaiting_script,
         "scenes": awaiting_scenes,
+        "assets": awaiting_assets,
         "tts": awaiting_tts,
         "video": awaiting_video,
         "publishing": awaiting_publish,
@@ -332,6 +348,7 @@ async def system_overview(
         "research": "awaiting research",
         "script": "awaiting a script",
         "scenes": "awaiting a scene plan",
+        "assets": "awaiting licensed visuals",
         "tts": "awaiting narration",
         "video": "awaiting a render",
         "publishing": "queued to publish",
