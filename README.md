@@ -77,7 +77,9 @@ uvicorn backend.app.main:app --reload
 
 Open the editorial dashboard at <http://127.0.0.1:8000/dashboard>. The API documentation is at <http://127.0.0.1:8000/docs>.
 
-The dashboard is an editorial operations console with six workspaces: a command center (pipeline health, attention items, service readiness, recent runs), **Production** (one-click video generation), the review queue (source/evidence provenance, script and scene editors, quality checks, approval controls), agent runs, publishing records, and the article library. Stage actions are asynchronous: the UI triggers a stage, polls its agent run, and refreshes counts when it completes.
+The dashboard is an editorial operations console with six workspaces: a command center (next action, active productions, metrics, pipeline health, attention items, service readiness, recent runs), **Production** (one-click video generation), the review queue (source/evidence provenance, script and scene editors, quality checks, approval controls), agent runs, publishing records, and the article library. Stage actions are asynchronous: the UI triggers a stage, polls its agent run, and refreshes counts when it completes.
+
+The interface uses one low-saturation charcoal palette with a restrained slate-blue accent. Color, type, spacing, radii, shadows, controls, and motion are centralized as CSS custom properties in `frontend/styles.css`; only a dark theme is implemented. Status is always paired with text, and the UI never implies that a render publishes itself.
 
 ### One-click production
 
@@ -112,7 +114,7 @@ See [`docs/local-tools.md`](docs/local-tools.md) for download and verification c
 
 ### Typical editorial run
 
-1. Use **Advance pipeline** in the dashboard to run deduplication through video rendering in order, or trigger individual stages. Collection and publishing stay explicit: run **Collect news** to fetch feeds and **Process queue** after approving drafts.
+1. Use **Advance pipeline** in the Overview next-action band to run deduplication through video rendering in order, or trigger individual stages. Collection and publishing stay explicit: run **Collect news** to fetch feeds and **Process queue** after approving drafts.
 2. Open a rendered draft in **Review queue** and inspect sources, claims, evidence, script, scenes, and quality checks.
 3. Approve, reject, or request changes. Rejection and change requests require notes.
 4. Approved drafts can be queued for `local` export (no credentials required) or YouTube (if OAuth credentials are configured).

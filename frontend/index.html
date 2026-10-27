@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#070d18" />
+    <meta name="theme-color" content="#0a0c0f" />
     <meta
       name="description"
       content="Editorial operations console for the AI newsroom: pipeline health, review queue, agent runs, and publishing."
     />
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%235eead4'/%3E%3Cpath d='M8 9h12a3 3 0 0 1 3 3v11H11a3 3 0 0 1-3-3V9Z' fill='none' stroke='%2304201d' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='M12 14h7M12 19h7' stroke='%2304201d' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%239db2e6'/%3E%3Cpath d='M8 9h12a3 3 0 0 1 3 3v11H11a3 3 0 0 1-3-3V9Z' fill='none' stroke='%230b0f16' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='M12 14h7M12 19h7' stroke='%230b0f16' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"
     />
     <title>Newsroom · Editorial operations</title>
     <link rel="stylesheet" href="/dashboard/styles.css" />
@@ -19,6 +19,7 @@
   <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
     <div class="nav-scrim" id="nav-scrim" hidden></div>
+    <div class="nav-tooltip" id="nav-tooltip" role="tooltip" hidden></div>
     <div class="app-shell" id="app-shell">
       <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
         <div class="sidebar-head">
@@ -47,34 +48,34 @@
 
         <nav class="nav" aria-label="Workspace">
           <p class="nav-group-label">Operations</p>
-          <a class="nav-item" data-view="overview" href="#/overview">
+          <a class="nav-item" data-view="overview" data-label="Overview" aria-label="Overview" href="#/overview">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
             <span class="nav-label">Overview</span>
           </a>
-          <a class="nav-item" data-view="production" href="#/production">
+          <a class="nav-item" data-view="production" data-label="Video studio" aria-label="Video studio" href="#/production">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
             <span class="nav-label">Video studio</span>
           </a>
-          <a class="nav-item" data-view="queue" href="#/review">
+          <a class="nav-item" data-view="queue" data-label="Review queue" aria-label="Review queue" href="#/review">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m8 12 3 3 5-6" /></svg>
             <span class="nav-label">Review queue</span>
             <span class="nav-badge" id="nav-pending" aria-label="Pending reviews">0</span>
           </a>
 
           <p class="nav-group-label">Pipeline</p>
-          <a class="nav-item" data-view="runs" href="#/runs">
+          <a class="nav-item" data-view="runs" data-label="Agent runs" aria-label="Agent runs" href="#/runs">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-7 5 14L17 12h4" /></svg>
             <span class="nav-label">Agent runs</span>
           </a>
 
           <p class="nav-group-label">Distribution</p>
-          <a class="nav-item" data-view="publishing" href="#/publishing">
+          <a class="nav-item" data-view="publishing" data-label="Publishing" aria-label="Publishing" href="#/publishing">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>
             <span class="nav-label">Publishing</span>
           </a>
 
           <p class="nav-group-label">Library</p>
-          <a class="nav-item" data-view="articles" href="#/articles">
+          <a class="nav-item" data-view="articles" data-label="Articles" aria-label="Articles" href="#/articles">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M8 13h8M8 17h6" /></svg>
             <span class="nav-label">Articles</span>
           </a>
@@ -126,10 +127,6 @@
               <svg class="icon spin-target" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
               <span id="refresh-label">Refresh</span>
             </button>
-            <button class="button primary" id="pipeline-button" type="button">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z" /></svg>
-              <span id="pipeline-label">Advance pipeline</span>
-            </button>
           </div>
         </header>
 
@@ -140,6 +137,51 @@
 
         <main class="main" id="main-content" tabindex="-1">
           <section class="view" id="view-overview" data-view-panel="overview">
+            <section class="focus-band" aria-labelledby="focus-heading">
+              <div class="focus-copy">
+                <p class="focus-kicker">Next action</p>
+                <h2 id="focus-heading">Produce the next verified story</h2>
+                <p>
+                  Choose a script with a completed evidence brief and render captioned
+                  16:9 and 9:16 cuts in one resumable run. Human approval stays
+                  mandatory before anything is published.
+                </p>
+              </div>
+              <div class="focus-actions">
+                <a class="button primary" href="#/production">New production</a>
+                <a class="button" href="#/review">Review queue</a>
+                <button class="button ghost" id="pipeline-button" type="button">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z" /></svg>
+                  <span id="pipeline-label">Advance pipeline</span>
+                </button>
+              </div>
+              <dl class="focus-stats">
+                <div>
+                  <dt>Pending reviews</dt>
+                  <dd id="focus-reviews">—</dd>
+                </div>
+                <div>
+                  <dt>Active renders</dt>
+                  <dd id="focus-renders">—</dd>
+                </div>
+                <div>
+                  <dt>Needs attention</dt>
+                  <dd id="focus-attention">—</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="panel" aria-labelledby="active-work-heading">
+              <div class="panel-head">
+                <div>
+                  <h2 id="active-work-heading">Production activity</h2>
+                  <p class="panel-subtitle">Queued, rendering, awaiting-review, and failed videos.</p>
+                </div>
+                <a class="text-link" href="#/production">Open studio</a>
+              </div>
+              <div class="active-work-list" id="overview-production" aria-live="polite"></div>
+            </section>
+
             <div class="metric-grid" id="overview-metrics" aria-label="Operational overview"></div>
 
             <div class="command-grid">
@@ -253,31 +295,35 @@
                     </div>
                   </div>
 
-                  <div class="form-row two">
-                    <div class="form-row">
-                      <label for="prod-voice">Narration voice</label>
-                      <input class="input" id="prod-voice" type="text" readonly />
-                    </div>
-                    <div class="form-row">
-                      <label for="prod-music">Licensed music file (optional)</label>
-                      <input
-                        class="input"
-                        id="prod-music"
-                        type="text"
-                        placeholder="assets/music/track.mp3"
-                      />
-                    </div>
+                  <div class="form-row">
+                    <label for="prod-voice">Narration voice</label>
+                    <input class="input" id="prod-voice" type="text" readonly />
                   </div>
 
-                  <label class="checkbox-row">
-                    <input id="prod-captions" type="checkbox" checked />
-                    <span>Burn aspect-aware captions into both renders</span>
-                  </label>
+                  <details class="advanced-options">
+                    <summary>Advanced options</summary>
+                    <div class="advanced-body">
+                      <div class="form-row">
+                        <label for="prod-music">Licensed music file (optional)</label>
+                        <input
+                          class="input"
+                          id="prod-music"
+                          type="text"
+                          placeholder="assets/music/track.mp3"
+                        />
+                      </div>
 
-                  <label class="checkbox-row">
-                    <input id="prod-renarrate" type="checkbox" />
-                    <span>Re-narrate this script with the current voice and mastering chain</span>
-                  </label>
+                      <label class="checkbox-row">
+                        <input id="prod-captions" type="checkbox" checked />
+                        <span>Burn aspect-aware captions into both renders</span>
+                      </label>
+
+                      <label class="checkbox-row">
+                        <input id="prod-renarrate" type="checkbox" />
+                        <span>Re-narrate this script with the current voice and mastering chain</span>
+                      </label>
+                    </div>
+                  </details>
 
                   <div class="style-summary" id="prod-style-summary" aria-live="polite"></div>
 
@@ -440,6 +486,10 @@
                   <tbody id="runs-body"></tbody>
                 </table>
               </div>
+              <div class="panel-foot" id="runs-foot" hidden>
+                <span class="panel-foot-meta" id="runs-foot-meta"></span>
+                <button class="button ghost small" id="runs-more" type="button" hidden>Show more runs</button>
+              </div>
             </section>
           </section>
 
@@ -485,6 +535,10 @@
                 <span class="count-chip" id="articles-count">0</span>
               </div>
               <div class="article-grid" id="articles-list"></div>
+              <div class="panel-foot" id="articles-foot" hidden>
+                <span class="panel-foot-meta" id="articles-foot-meta"></span>
+                <button class="button ghost small" id="articles-more" type="button" hidden>Show more articles</button>
+              </div>
             </section>
           </section>
         </main>

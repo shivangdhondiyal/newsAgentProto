@@ -135,7 +135,9 @@
     detailTab: "story",
     detailDirty: false,
     runs: [],
+    runsVisible: 40,
     articles: [],
+    articlesVisible: 24,
     refreshing: false,
     pipelineBusy: false,
     stageBusy: new Set(),
@@ -254,7 +256,7 @@
     running: "info",
     queued: "info",
     processing: "info",
-    awaiting_approval: "info",
+    awaiting_approval: "warning",
     draft: "muted",
     idle: "muted",
     unknown: "muted",
@@ -766,6 +768,8 @@
             <p class="attention-title">${esc(item.title)}</p>
             <p class="attention-detail">${esc(item.detail)}</p>
             <div class="attention-meta"><span>${esc(
+              titleCase(item.severity || "info"),
+            )}</span><span>${esc(
               titleCase(item.kind || "attention"),
             )}</span><span>${esc(fmtRelative(item.created_at))}</span></div>
           </div>`;
@@ -863,10 +867,151 @@
     tbody.innerHTML = runs.map(runRow).join("");
   }
 
+  function renderFocusStats(data) {
+    const metrics = data?.metrics || [];
+    const pending = Number(data?.journal?.pending_approvals ?? 0);
+    const renders = Number(metrics.find((metric) => metric.key === "renders")?.value ?? 0);
+    const attention = (data?.attention || []).length;
+    const setStat = (selector, value, href) => {
+      const node = $(selector);
+      if (!node) return;
+      node.innerHTML = href
+        ? `<a href="${esc(href)}">${esc(value)}</a>`
+        : esc(value);
+    };
+    setStat("#focus-reviews", pending, "#/review");
+    setStat("#focus-renders", renders, "#/production");
+    setStat("#focus-attention", attention);
+  }
+
+  function overviewJobProgress(job) {
+    const stages = job.stages || [];
+    if (!stages.length) {
+      const text =
+        job.status === "awaiting_approval"
+          ? "Awaiting editorial review"
+          : job.status === "completed"
+            ? "Completed"
+            : job.status === "failed"
+              ? "Failed — open for details"
+              : job.status === "interrupted"
+                ? "Interrupted — resumable"
+                : job.status === "running"
+                  ? job.current_stage
+                    ? `Running · ${titleCase(job.current_stage)}`
+                    : "Rendering"
+                  : job.status === "queued"
+                    ? "Queued"
+                    : titleCase(job.status);
+      return { percent: null, text };
+    }
+    const completed = stages.filter((stage) => stage.status === "completed").length;
+    const running = stages.some((stage) => stage.status === "running");
+    const percent = Math.round(((completed + (running ? 0.5 : 0)) / stages.length) * 100);
+    return {
+      percent,
+      text: `${completed}/${stages.length} stages${running ? " · rendering" : ""}`,
+    };
+  }
+
+  function renderOverviewProduction(jobs) {
+    const list = $("#overview-production");
+    if (!list) return;
+    const visible = (jobs || [])
+      .filter((job) =>
+        ["queued", "running", "awaiting_approval", "failed", "interrupted"].includes(
+          job.status,
+        ),
+      )
+      .slice(0, 5);
+    if (!visible.length) {
+      list.innerHTML = `<div class="inline-state">
+        <strong>No active productions</strong>
+        <span>Queued and rendering jobs appear here. Finished videos move to the review queue.</span>
+        <a class="button ghost small" href="#/production">Start a production</a>
+      </div>`;
+      return;
+    }
+    list.innerHTML = visible
+      .map((job) => {
+        const progress = overviewJobProgress(job);
+        const title =
+          job.title ||
+          job.article_title ||
+          `${titleCase(job.style_key)} production`;
+        const aspect = job.aspect_ratio === "both" ? "16:9 + 9:16" : job.aspect_ratio;
+        const tone = job.status === "failed" || job.status === "interrupted" ? "danger" : "";
+        return `<a class="active-job" href="#/production" data-overview-job="${esc(
+          job.id,
+        )}" aria-label="Open ${esc(title)} in the video studio">
+          <span class="active-job-main">
+            <span class="active-job-title">${esc(title)}</span>
+            <span class="active-job-meta">
+              <span>${esc(titleCase(job.style_key))}</span>
+              <span>${esc(aspect || "16:9")}</span>
+              <span>${esc(progress.text)}</span>
+              <span>${esc(fmtRelative(job.created_at))}</span>
+              <span>#${esc(String(job.id).slice(0, 8))}</span>
+            </span>
+            ${
+              progress.percent === null
+                ? ""
+                : `<span class="active-job-progress" aria-hidden="true"><span style="width:${progress.percent}%" data-tone="${esc(
+                    tone,
+                  )}"></span></span>`
+            }
+          </span>
+          <span class="active-job-side">
+            ${badge(job.status)}
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+          </span>
+        </a>`;
+      })
+      .join("");
+    $$("[data-overview-job]", list).forEach((row) => {
+      row.addEventListener("click", () => {
+        productionState().selectedJobId = row.dataset.overviewJob;
+      });
+    });
+  }
+
+  function renderOverviewProductionError(message) {
+    const list = $("#overview-production");
+    if (!list) return;
+    list.innerHTML = `<div class="inline-state">
+      <strong>Production activity unavailable</strong>
+      <span class="error-text">${esc(message)}</span>
+      <button class="button ghost small" type="button" data-retry="overview-production">Retry</button>
+    </div>`;
+    wireRetry("overview-production", () => loadOverviewProduction());
+  }
+
+  async function loadOverviewProduction() {
+    const list = $("#overview-production");
+    if (!list) return false;
+    if (!list.dataset.loaded) {
+      list.innerHTML = `<div class="inline-state">
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-line short"></div>
+      </div>`;
+    }
+    try {
+      const jobs = await api("/production/jobs?limit=6");
+      list.dataset.loaded = "1";
+      renderOverviewProduction(jobs || []);
+      return true;
+    } catch (error) {
+      list.dataset.loaded = "1";
+      renderOverviewProductionError(describeError(error));
+      return false;
+    }
+  }
+
   function renderOverview(data) {
     state.overview = data;
     updateSystemStatus(data);
     updateNavPending(data.journal?.pending_approvals);
+    renderFocusStats(data);
     renderMetrics(data.metrics);
     renderPipeline(data.pipeline);
     renderAttention(data.attention);
@@ -876,6 +1021,13 @@
   }
 
   function renderOverviewSkeleton() {
+    const production = $("#overview-production");
+    if (production && !production.dataset.loaded) {
+      production.innerHTML = `<div class="inline-state">
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-line short"></div>
+      </div>`;
+    }
     const metrics = $("#overview-metrics");
     if (metrics) {
       metrics.innerHTML = Array.from(
@@ -910,6 +1062,10 @@
   }
 
   function renderOverviewError(message) {
+    ["#focus-reviews", "#focus-renders", "#focus-attention"].forEach((selector) => {
+      const node = $(selector);
+      if (node) node.textContent = "—";
+    });
     const metrics = $("#overview-metrics");
     if (metrics) {
       metrics.innerHTML = `<article class="metric span-all">
@@ -962,12 +1118,15 @@
 
   async function loadOverview({ silent = false } = {}) {
     if (!silent) renderOverviewSkeleton();
+    const productionLoad = loadOverviewProduction();
     try {
       const data = await api("/system/overview");
       renderOverview(data);
+      await productionLoad;
       return true;
     } catch (error) {
       renderOverviewError(describeError(error));
+      await productionLoad;
       await loadStatusFallback();
       return false;
     }
@@ -1179,7 +1338,7 @@
       key,
     )}" aria-selected="${active ? "true" : "false"}" aria-controls="tab-${esc(
       key,
-    )}" data-tab="${esc(key)}">${esc(label)}${suffix}</button>`;
+    )}" data-tab="${esc(key)}" tabindex="${active ? 0 : -1}">${esc(label)}${suffix}</button>`;
   }
 
   function tabPanel(key, active, content) {
@@ -1237,11 +1396,11 @@
     </div>`;
 
     const tabs = `<div class="tab-list" role="tablist" aria-label="Review workspace">
-      ${tabButton("story", "Story", activeTab === "story")}
+      ${tabButton("story", "Overview", activeTab === "story")}
       ${tabButton("evidence", "Evidence", activeTab === "evidence", claims.length + evidence.length)}
       ${tabButton("script", "Script", activeTab === "script")}
-      ${tabButton("storyboard", "Storyboard", activeTab === "storyboard", scenes.length)}
-      ${tabButton("review", "Review", activeTab === "review", `${passed}/${checks.length}`)}
+      ${tabButton("storyboard", "Scenes", activeTab === "storyboard", scenes.length)}
+      ${tabButton("review", "Decision", activeTab === "review", `${passed}/${checks.length}`)}
     </div>`;
 
     panel.innerHTML = `<div class="detail">
@@ -1294,9 +1453,15 @@
     const credibilityText = credibility
       ? `${titleCase(credibility.status)} · ${credibility.confidence_score}`
       : "Not assessed";
-    return `<video controls preload="metadata" src="${API}/reviews/videos/${esc(
-      detail.video.id,
-    )}/file"></video>
+    return `<div class="review-video" data-review-video>
+      <video controls preload="metadata" src="${API}/reviews/videos/${esc(
+        detail.video.id,
+      )}/file"></video>
+      <p class="inline-state" data-video-error hidden>
+        <strong>Render file unavailable</strong>
+        <span>The stored record exists, but its video file could not be loaded. Re-render this story from the video studio before publishing.</span>
+      </p>
+    </div>
     <section class="detail-section">
       <h3>Story provenance <span class="muted">Collected ${fmtDate(
         article.collected_at,
@@ -1392,13 +1557,50 @@
     </section>`;
   }
 
+  function scriptStatsText(words) {
+    const safeWords = Math.max(0, Number(words) || 0);
+    const seconds = Math.round((safeWords / 150) * 60);
+    return `${safeWords} words · about ${fmtDuration(seconds)} at 150 wpm`;
+  }
+
+  function scriptWordCount(script) {
+    const text = [
+      script?.title,
+      script?.hook,
+      script?.introduction,
+      ...(script?.main_story || []),
+      ...(script?.context || []),
+      script?.closing,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return text.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  function updateScriptStats(form) {
+    const node = $("#script-stats");
+    if (!node || !form) return;
+    const values = [
+      "#script-title",
+      "#script-hook",
+      "#script-intro",
+      "#script-main",
+      "#script-context",
+      "#script-closing",
+    ].map((selector) => $(selector, form)?.value || "");
+    const words = values.join(" ").trim().split(/\s+/).filter(Boolean).length;
+    node.textContent = scriptStatsText(words);
+  }
+
   function renderScriptPanel(detail, canEdit) {
     const script = detail.script;
     return `<section class="detail-section">
       <h3>Script
-        <span class="muted">${esc(script.estimated_duration_seconds)}s estimated · ${badge(
-          script.status,
-        )}</span>
+        <span class="muted">${esc(
+          script.estimated_duration_seconds,
+        )}s estimated · <span id="script-stats">${esc(
+          scriptStatsText(scriptWordCount(script)),
+        )}</span> · ${badge(script.status)}</span>
       </h3>
       <form id="script-form" class="form-grid">
         <div class="form-row">
@@ -1672,36 +1874,78 @@
   }
 
   function setDetailTab(key) {
-    if (!state.detail) return;
-    if (key === state.detailTab) return;
+    if (!state.detail) return false;
+    if (key === state.detailTab) return false;
     if (state.detailDirty) {
-      if (!window.confirm("Discard unsaved changes in this review?")) return;
+      if (!window.confirm("Discard unsaved changes in this review?")) return false;
       state.detailDirty = false;
       state.detailTab = key;
       renderDetail(state.detail);
-      return;
+      return true;
     }
     state.detailTab = key;
     $$("[data-tab]", $("#review-detail")).forEach((button) => {
-      button.setAttribute("aria-selected", String(button.dataset.tab === key));
+      const selected = button.dataset.tab === key;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
     });
     $$("[data-tab-panel]", $("#review-detail")).forEach((panel) => {
       panel.hidden = panel.dataset.tabPanel !== key;
     });
+    return true;
   }
 
   function wireDetail(detail) {
     const panel = $("#review-detail");
     if (!panel) return;
 
+    const reviewVideo = $("[data-review-video]", panel);
+    if (reviewVideo) {
+      const video = $("video", reviewVideo);
+      const videoError = $("[data-video-error]", reviewVideo);
+      const showVideoFallback = () => {
+        if (!video || !videoError) return;
+        video.hidden = true;
+        videoError.hidden = false;
+      };
+      video?.addEventListener("error", showVideoFallback);
+      if (video?.error) showVideoFallback();
+    }
+
     $$("[data-tab]", panel).forEach((button) => {
-      button.addEventListener("click", () => setDetailTab(button.dataset.tab));
+      button.addEventListener("click", () => {
+        const key = button.dataset.tab;
+        if (setDetailTab(key)) $(`#tab-btn-${key}`, panel)?.focus();
+      });
+    });
+
+    const tablist = $(".tab-list", panel);
+    tablist?.addEventListener("keydown", (event) => {
+      const tabs = $$("[data-tab]", tablist);
+      const index = tabs.indexOf(document.activeElement);
+      if (index < 0) return;
+      let next = null;
+      if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length];
+      else if (event.key === "ArrowLeft") {
+        next = tabs[(index - 1 + tabs.length) % tabs.length];
+      } else if (event.key === "Home") next = tabs[0];
+      else if (event.key === "End") next = tabs[tabs.length - 1];
+      if (!next) return;
+      event.preventDefault();
+      const key = next.dataset.tab;
+      if (setDetailTab(key)) $(`#tab-btn-${key}`, panel)?.focus();
     });
 
     $$("[data-dirty]", panel).forEach((input) => {
       input.addEventListener("input", markDirty);
       input.addEventListener("change", markDirty);
     });
+
+    const scriptForm = $("#script-form", panel);
+    if (scriptForm) {
+      scriptForm.addEventListener("input", () => updateScriptStats(scriptForm));
+      updateScriptStats(scriptForm);
+    }
 
     $("[data-refresh-detail]", panel)?.addEventListener("click", () => {
       if (state.detailDirty && !window.confirm("Discard unsaved changes and reload?")) {
@@ -2189,6 +2433,9 @@
     if (!tbody) return;
     const agent = $("#runs-filter")?.value || "";
     const runs = state.runs.filter((run) => !agent || run.agent_name === agent);
+    const foot = $("#runs-foot");
+    const footMeta = $("#runs-foot-meta");
+    const more = $("#runs-more");
     if (!runs.length) {
       tbody.innerHTML = tableEmptyRow(
         6,
@@ -2197,9 +2444,16 @@
           : "No agent runs recorded yet. Trigger a stage above to create the first audit record.",
         agent ? "" : `<a class="button ghost small" href="#/overview">Open command center</a>`,
       );
+      if (foot) foot.hidden = true;
       return;
     }
-    tbody.innerHTML = runs.map(runRow).join("");
+    const visible = runs.slice(0, state.runsVisible);
+    tbody.innerHTML = visible.map(runRow).join("");
+    if (foot && footMeta && more) {
+      foot.hidden = false;
+      footMeta.textContent = `Showing ${visible.length} of ${runs.length} runs`;
+      more.hidden = visible.length >= runs.length;
+    }
   }
 
   function renderRunActions() {
@@ -2361,6 +2615,9 @@
     const count = $("#articles-count");
     if (count) count.textContent = String((articles || []).length);
     if (!container) return;
+    const foot = $("#articles-foot");
+    const footMeta = $("#articles-foot-meta");
+    const more = $("#articles-more");
     if (!(articles || []).length) {
       container.innerHTML = `<div class="empty-state span-all">
         <span class="empty-glyph" aria-hidden="true">▤</span>
@@ -2368,9 +2625,11 @@
         <p>Run Collect news to pull the configured feeds into the evidence library.</p>
         <a class="button ghost small mt-3" href="#/runs">Open agent runs</a>
       </div>`;
+      if (foot) foot.hidden = true;
       return;
     }
-    container.innerHTML = articles
+    const visible = articles.slice(0, state.articlesVisible);
+    container.innerHTML = visible
       .map(
         (article) => `<article class="article-card">
           <div class="chips">
@@ -2386,6 +2645,11 @@
         </article>`,
       )
       .join("");
+    if (foot && footMeta && more) {
+      foot.hidden = false;
+      footMeta.textContent = `Showing ${visible.length} of ${articles.length} articles`;
+      more.hidden = visible.length >= articles.length;
+    }
   }
 
   async function loadArticles({ silent = false } = {}) {
@@ -2653,14 +2917,20 @@
     list.innerHTML = prod.jobs
       .map((job) => {
         const selected = prod.selectedJobId === job.id;
+        const progress = overviewJobProgress(job);
+        const aspect = job.aspect_ratio === "both" ? "16:9 + 9:16" : job.aspect_ratio;
         return `<button class="production-job-row ${selected ? "selected" : ""}" type="button" data-production-job="${esc(
           job.id,
         )}" ${selected ? 'aria-current="true"' : ""}>
           <span class="production-job-main">
-            <strong>${esc(titleCase(job.style_key))} · ${esc(
-              job.aspect_ratio === "both" ? "16:9 + 9:16" : job.aspect_ratio,
+            <strong>${esc(
+              job.title ||
+                job.article_title ||
+                `${titleCase(job.style_key)} production`,
             )}</strong>
-            <small>${esc(fmtDate(job.created_at))}</small>
+            <small>${esc(aspect)} · ${esc(progress.text)} · ${esc(
+              fmtRelative(job.created_at),
+            )}</small>
           </span>
           ${badge(job.status)}
         </button>`;
@@ -3218,6 +3488,8 @@
       collapsed ? "1" : "0",
     );
     applySidebarState();
+    const tooltip = $("#nav-tooltip");
+    if (tooltip) tooltip.hidden = true;
   }
 
   function openMobileNav() {
@@ -3244,7 +3516,35 @@
     if (toggle) toggle.setAttribute("aria-expanded", "false");
   }
 
+  function wireNavTooltips() {
+    const tooltip = $("#nav-tooltip");
+    if (!tooltip) return;
+    const hide = () => {
+      tooltip.hidden = true;
+    };
+    const show = (item) => {
+      const shell = $("#app-shell");
+      if (!shell?.classList.contains("sidebar-collapsed")) return;
+      const label = item.dataset.label || item.getAttribute("aria-label");
+      if (!label) return;
+      const rect = item.getBoundingClientRect();
+      tooltip.textContent = label;
+      tooltip.style.top = `${Math.round(rect.top + rect.height / 2)}px`;
+      tooltip.style.left = `${Math.round(rect.right + 10)}px`;
+      tooltip.hidden = false;
+    };
+    $$(".nav-item").forEach((item) => {
+      item.addEventListener("mouseenter", () => show(item));
+      item.addEventListener("mouseleave", hide);
+      item.addEventListener("focus", () => show(item));
+      item.addEventListener("blur", hide);
+    });
+    window.addEventListener("resize", hide);
+    window.addEventListener("scroll", hide, true);
+  }
+
   function wireGlobal() {
+    wireNavTooltips();
     $$(".nav-item").forEach((item) => {
       item.addEventListener("click", () => closeMobileNav());
     });
@@ -3282,7 +3582,20 @@
       });
     }
 
-    $("#runs-filter")?.addEventListener("change", renderRuns);
+    $("#runs-filter")?.addEventListener("change", () => {
+      state.runsVisible = 40;
+      renderRuns();
+    });
+
+    $("#runs-more")?.addEventListener("click", () => {
+      state.runsVisible += 40;
+      renderRuns();
+    });
+
+    $("#articles-more")?.addEventListener("click", () => {
+      state.articlesVisible += 24;
+      renderArticles(state.articles);
+    });
 
     $("#run-publishing-button")?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
@@ -3296,7 +3609,10 @@
     $("#sidebar-collapse")?.addEventListener("click", toggleSidebar);
 
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeMobileNav();
+      if (event.key !== "Escape") return;
+      const wasOpen = $("#app-shell")?.classList.contains("nav-open");
+      closeMobileNav();
+      if (wasOpen) $("#menu-toggle")?.focus();
     });
     window.addEventListener("resize", () => {
       applySidebarState();
