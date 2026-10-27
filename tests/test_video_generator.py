@@ -11,6 +11,7 @@ from backend.app.core.config import Settings
 from backend.app.db.base import Base
 from backend.app.db.models import (
     Article,
+    CaptionTrack,
     NarrationAudio,
     NarrationChunk,
     NewsScript,
@@ -20,7 +21,9 @@ from backend.app.db.models import (
     VideoRender,
     VideoVariant,
 )
-from backend.app.media.renderer import RenderCheck, RenderResult, SceneClip
+from backend.app.media.renderer import CaptionRender, RenderCheck, RenderResult, SceneClip
+from backend.app.services.captions import CaptionService
+from tests.support import seed_content
 
 
 class FakeVideoRenderer:
@@ -43,11 +46,17 @@ class FakeVideoRenderer:
         height: int,
         transition_seconds: float = 0.4,
         aspect_ratio: str = "16:9",
+        caption_render: CaptionRender | None = None,
     ) -> RenderResult:
         assert clips and all(clip.image_path.is_file() for clip in clips)
         assert subtitle_path.is_file()
         assert narration_path.is_file()
         assert duration_seconds == 2.5
+        if caption_render is not None:
+            assert caption_render.ass_path is not None
+            assert caption_render.ass_path.is_file()
+            assert caption_render.soft_subtitle_path is not None
+            assert caption_render.soft_subtitle_path.is_file()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"test-video")
         self.calls.append(
@@ -56,6 +65,9 @@ class FakeVideoRenderer:
                 "width": width,
                 "height": height,
                 "clips": len(clips),
+                "caption": caption_render.as_public_dict()
+                if caption_render is not None
+                else None,
             }
         )
         return RenderResult(
@@ -314,3 +326,49 @@ async def test_video_generator_skips_a_narration_whose_audio_file_is_missing(
     async with sessions() as session:
         assert await session.scalar(select(VideoRender)) is None
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_video_generator_burns_in_the_persisted_caption_track(
+    tmp_path: Path,
+) -> None:
+    seeded = await seed_content(tmp_path)
+    async with seeded.sessions() as session:
+        narration = await session.get(NarrationAudio, seeded.narration_id)
+    assert narration is not None
+    Path(narration.wav_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(narration.wav_path).write_bytes(b"RIFF-test-audio")
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:",
+        video_output_dir=tmp_path / "video",
+        caption_output_dir=tmp_path / "captions",
+        caption_transcription_provider="none",
+    )
+    caption_service = CaptionService(settings, seeded.sessions)
+    renderer = FakeVideoRenderer()
+    result = await VideoGeneratorAgent(
+        settings,
+        seeded.sessions,
+        renderer=renderer,
+        caption_service=caption_service,
+    ).execute(narration_id=seeded.narration_id, captions=True)
+
+    assert result.status == "completed"
+    assert len(renderer.calls) == 2
+    for call in renderer.calls:
+        caption = call["caption"]
+        assert caption is not None
+        assert caption["burn_in"] is True
+        assert caption["soft_subs"] is True
+        assert caption["cue_count"] > 0
+        assert caption["source"] == "narration_alignment"
+    async with seeded.sessions() as session:
+        track = await session.scalar(
+            select(CaptionTrack).where(
+                CaptionTrack.narration_audio_id == seeded.narration_id
+            )
+        )
+    assert track is not None
+    assert track.status == "completed"
+    assert track.srt_path and Path(track.srt_path).is_file()
+    await seeded.engine.dispose()

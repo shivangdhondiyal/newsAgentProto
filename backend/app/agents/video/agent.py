@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,14 +27,16 @@ from backend.app.db.models import (
     VisualAsset,
 )
 from backend.app.media.audio import mix_music, resolve_executable
+from backend.app.media.captions import default_fonts_dir
 from backend.app.media.craft import shot_for_position, transition_for_scene
 from backend.app.media.graphics import SceneVisual, render_scene_frame
 from backend.app.media.keywords import search_keywords
 from backend.app.media.presets import EditingPreset, get_preset
-from backend.app.media.renderer import FFmpegSceneRenderer, SceneClip
+from backend.app.media.renderer import CaptionRender, FFmpegSceneRenderer, SceneClip
 from backend.app.media.timeline import align_scenes_to_narration
 from backend.app.reviews.service import get_or_create_approval
 from backend.app.schemas.video import VideoRunRead
+from backend.app.services.captions import CaptionService, caption_track_for_render
 
 ASPECT_SIZES = {
     "16:9": ("video_landscape_width", "video_landscape_height"),
@@ -51,9 +54,11 @@ class VideoGeneratorAgent:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         renderer: VideoRenderer | None = None,
+        caption_service: CaptionService | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
+        self._caption_service = caption_service
         self._renderer = renderer or FFmpegSceneRenderer(
             settings.video_ffmpeg_executable,
             fps=settings.video_fps,
@@ -196,8 +201,25 @@ class VideoGeneratorAgent:
         scene_assets = await self._load_scene_assets(session, [scene.id for scene in scenes])
         output_dir = self._settings.video_output_dir / narration.id
         output_dir.mkdir(parents=True, exist_ok=True)
-        subtitle_path = output_dir / "subtitles.srt"
-        subtitle_path.write_text(render_srt(chunks), encoding="utf-8")
+        caption_track = None
+        if captions and self._caption_service is not None:
+            # The production pipeline generates captions in its own stage. A
+            # direct video run resolves the persisted track (or creates one) so
+            # the burned-in text and the soft track always come from one source.
+            caption_track = await caption_track_for_render(
+                self._caption_service,
+                session,
+                narration,
+                preset_key=None,
+                settings=None,
+            )
+        legacy_subtitle_path = output_dir / "subtitles.srt"
+        legacy_subtitle_path.write_text(render_srt(chunks), encoding="utf-8")
+        subtitle_path = (
+            Path(caption_track.srt_path)
+            if caption_track is not None and caption_track.srt_path
+            else legacy_subtitle_path
+        )
         timeline_path = output_dir / "timeline.json"
         timeline_path.write_text(
             json.dumps(
@@ -254,73 +276,33 @@ class VideoGeneratorAgent:
                     ducking=preset.craft.ducking,
                 )
                 audio_path = mixed_path
-        rendered: dict[str, tuple[Path, int, int, float, list[dict[str, str]]]] = {}
-        for aspect in requested:
-            width, height = self._size_for(aspect)
-            frame_dir = output_dir / "frames" / aspect.replace(":", "x")
-            clips: list[SceneClip] = []
-            for index, (scene, timing) in enumerate(zip(scenes, timings, strict=True)):
-                visual = self._scene_visual(
-                    scene, timing, scene_assets.get(scene.id), preset
-                )
-                frame_path = frame_dir / f"scene-{scene.position:03d}.jpg"
-                frame = render_scene_frame(
-                    visual,
-                    preset,
-                    width,
-                    height,
-                    frame_path,
-                    aspect_ratio=aspect,
-                    show_caption=captions,
-                )
-                transition = _transition_for(index, len(scenes), preset)
-                motion = (
-                    "static"
-                    if frame.graphic_type
-                    in {"map", "chart", "timeline", "diagram", "stat", "quote", "split"}
-                    else preset.motion
-                )
-                clips.append(
-                    SceneClip(
-                        position=scene.position,
-                        image_path=frame.path,
-                        duration_seconds=max(0.2, timing.duration_seconds),
-                        transition=transition,
-                        motion=motion,
-                        motion_intensity=preset.motion_intensity,
-                        easing=preset.craft.easing,
-                        motion_path=preset.craft.motion_path,
-                    )
-                )
-            video_path = output_dir / f"draft-{aspect.replace(':', 'x')}.mp4"
-            result = await self._renderer.render(
-                clips,
-                audio_path,
-                subtitle_path,
-                video_path,
-                narration.duration_seconds,
-                width=width,
-                height=height,
-                transition_seconds=self._settings.video_transition_seconds,
-                aspect_ratio=aspect,
+        if caption_track is not None:
+            assert self._caption_service is not None
+            await self._caption_service.mark_rendering(session, caption_track.id)
+        try:
+            rendered, render_warnings = await self._render_aspects(
+                requested=requested,
+                output_dir=output_dir,
+                scenes=scenes,
+                timings=timings,
+                scene_assets=scene_assets,
+                preset=preset,
+                audio_path=audio_path,
+                subtitle_path=subtitle_path,
+                narration=narration,
+                burn_scene_captions=captions and caption_track is None,
+                caption_track=caption_track,
             )
-            warnings.extend(result.transition_warnings)
-            failed = [check for check in result.checks if check.status == "failed"]
-            if failed:
-                raise ValueError(
-                    f"{aspect} render failed validation: "
-                    + "; ".join(f"{check.name}: {check.detail}" for check in failed)
-                )
-            rendered[aspect] = (
-                result.path,
-                result.width,
-                result.height,
-                result.duration_seconds,
-                [
-                    {"name": check.name, "status": check.status, "detail": check.detail}
-                    for check in result.checks
-                ],
-            )
+        except Exception as exc:
+            if caption_track is not None:
+                assert self._caption_service is not None
+                await self._caption_service.mark_failed(session, caption_track.id, str(exc))
+            raise
+        else:
+            if caption_track is not None:
+                assert self._caption_service is not None
+                await self._caption_service.mark_completed(session, caption_track.id)
+        warnings.extend(render_warnings)
 
         canonical_aspect = "16:9" if "16:9" in rendered else next(iter(rendered))
         canonical_path, canonical_w, canonical_h, canonical_duration, _ = rendered[
@@ -381,6 +363,146 @@ class VideoGeneratorAgent:
             approval.artifact_sha256 = None
             approval.quality_checks = []
         return warnings
+
+    async def _render_aspects(
+        self,
+        *,
+        requested: list[str],
+        output_dir: Path,
+        scenes: list[Scene],
+        timings: list[Any],
+        scene_assets: dict[str, tuple[SceneAsset, VisualAsset | None]],
+        preset: EditingPreset,
+        audio_path: Path,
+        subtitle_path: Path,
+        narration: NarrationAudio,
+        burn_scene_captions: bool,
+        caption_track: Any,
+    ) -> tuple[
+        dict[str, tuple[Path, int, int, float, list[dict[str, str]]]], list[str]
+    ]:
+        rendered: dict[str, tuple[Path, int, int, float, list[dict[str, str]]]] = {}
+        warnings: list[str] = []
+        for aspect in requested:
+            width, height = self._size_for(aspect)
+            frame_dir = output_dir / "frames" / aspect.replace(":", "x")
+            clips: list[SceneClip] = []
+            for index, (scene, timing) in enumerate(zip(scenes, timings, strict=True)):
+                visual = self._scene_visual(
+                    scene, timing, scene_assets.get(scene.id), preset
+                )
+                frame_path = frame_dir / f"scene-{scene.position:03d}.jpg"
+                frame = render_scene_frame(
+                    visual,
+                    preset,
+                    width,
+                    height,
+                    frame_path,
+                    aspect_ratio=aspect,
+                    show_caption=burn_scene_captions,
+                )
+                transition = _transition_for(index, len(scenes), preset)
+                motion = (
+                    "static"
+                    if frame.graphic_type
+                    in {"map", "chart", "timeline", "diagram", "stat", "quote", "split"}
+                    else preset.motion
+                )
+                clips.append(
+                    SceneClip(
+                        position=scene.position,
+                        image_path=frame.path,
+                        duration_seconds=max(0.2, timing.duration_seconds),
+                        transition=transition,
+                        motion=motion,
+                        motion_intensity=preset.motion_intensity,
+                        easing=preset.craft.easing,
+                        motion_path=preset.craft.motion_path,
+                    )
+                )
+            caption_render = await self._caption_render_for(caption_track, aspect)
+            video_path = output_dir / f"draft-{aspect.replace(':', 'x')}.mp4"
+            render_kwargs: dict[str, Any] = {
+                "width": width,
+                "height": height,
+                "transition_seconds": self._settings.video_transition_seconds,
+                "aspect_ratio": aspect,
+            }
+            if caption_render is not None:
+                render_kwargs["caption_render"] = caption_render
+            result = await self._renderer.render(
+                clips,
+                audio_path,
+                subtitle_path,
+                video_path,
+                narration.duration_seconds,
+                **render_kwargs,
+            )
+            warnings.extend(result.transition_warnings)
+            failed = [check for check in result.checks if check.status == "failed"]
+            if failed:
+                raise ValueError(
+                    f"{aspect} render failed validation: "
+                    + "; ".join(f"{check.name}: {check.detail}" for check in failed)
+                )
+            checks = [
+                {"name": check.name, "status": check.status, "detail": check.detail}
+                for check in result.checks
+            ]
+            if caption_render is not None:
+                checks.append(
+                    {
+                        "name": "caption_track",
+                        "status": "passed",
+                        "detail": (
+                            f"{caption_render.cue_count} cue(s); "
+                            f"burn-in={caption_render.burns_in}; "
+                            f"soft track={caption_render.adds_soft_track}; "
+                            f"source={caption_render.source or 'unknown'}."
+                        ),
+                    }
+                )
+            rendered[aspect] = (
+                result.path,
+                result.width,
+                result.height,
+                result.duration_seconds,
+                checks,
+            )
+        return rendered, warnings
+
+    async def _caption_render_for(self, track: Any, aspect: str) -> CaptionRender | None:
+        if track is None or self._caption_service is None:
+            return None
+        ass_path = (
+            Path(track.ass_paths[aspect])
+            if track.ass_paths and track.ass_paths.get(aspect)
+            else None
+        )
+        soft_path = Path(track.srt_path) if track.srt_path else None
+        if (
+            ass_path is None
+            or not ass_path.is_file()
+            or soft_path is None
+            or not soft_path.is_file()
+        ):
+            assets = await self._caption_service.write_assets(track)
+            track.srt_path = str(assets.srt_path)
+            track.vtt_path = str(assets.vtt_path)
+            track.ass_paths = {
+                key: str(value) for key, value in assets.ass_paths.items()
+            }
+            ass_path = assets.ass_paths.get(aspect)
+            soft_path = assets.srt_path
+        return CaptionRender(
+            ass_path=ass_path,
+            fonts_dir=self._settings.caption_fonts_dir or default_fonts_dir(),
+            soft_subtitle_path=soft_path,
+            burn_in=self._settings.video_captions_enabled,
+            soft_subs=self._settings.caption_soft_subs_default,
+            cue_count=len(track.cues_json or []),
+            source=track.source,
+        )
 
     async def _load_scene_assets(
         self, session: AsyncSession, scene_ids: list[str]

@@ -75,6 +75,7 @@ class ScenePreviewRead(BaseModel):
     subtitle: str
     narration: str
     transition: str
+    timed_to_narration: bool = False
     frame_16x9: str | None = None
     frame_9x16: str | None = None
     asset: AssetLicenseRead | None = None
@@ -103,6 +104,7 @@ class ProductionJobRead(BaseModel):
     updated_at: datetime
     stages: list[ProductionStageRead] = []
     variants: list[VideoVariantRead] = []
+    caption_track: dict[str, Any] | None = None
     scenes: list[ScenePreviewRead] = []
     title: str | None = None
     article_title: str | None = None
@@ -157,6 +159,9 @@ class ProductionConfigRead(BaseModel):
     ffmpeg_available: bool
     piper_available: bool
     captions_available: bool
+    caption_presets: list[dict[str, Any]] = []
+    caption_defaults: dict[str, Any] = {}
+    caption_transcription: dict[str, Any] = {}
     music_dir: str
     destination_options: list[str]
     aspect_options: list[str]

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.core.config import Settings
 from backend.app.db.models import (
     Article,
+    CaptionTrack,
     ContentApproval,
     CredibilityAssessment,
     NarrationAudio,
@@ -30,7 +31,15 @@ from backend.app.db.models import (
     VisualAsset,
 )
 from backend.app.media.audio import resolve_executable
+from backend.app.media.captions import (
+    SOURCE_LABELS,
+    CaptionCue,
+    CaptionSettings,
+    list_caption_presets,
+    preset_settings,
+)
 from backend.app.media.presets import PRESETS, list_presets
+from backend.app.media.transcription import transcription_status
 from backend.app.reviews.quality import evaluate_video_quality
 from backend.app.schemas.production import ProductionJobCreate
 from backend.app.services.run_control import AgentRunCoordinator
@@ -42,6 +51,7 @@ STAGE_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("scenes", "Plan scenes"),
     ("assets", "Source visuals"),
     ("narrate", "Narrate"),
+    ("captions", "Generate captions"),
     ("render", "Render 16:9 + 9:16"),
     ("verify", "Verify outputs"),
 )
@@ -83,6 +93,7 @@ class ProductionService:
         asset_agent: Any,
         tts_agent: Any,
         video_agent: Any,
+        caption_service: Any | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -92,6 +103,7 @@ class ProductionService:
         self._asset_agent = asset_agent
         self._tts_agent = tts_agent
         self._video_agent = video_agent
+        self._caption_service = caption_service
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._create_lock = asyncio.Lock()
 
@@ -244,6 +256,53 @@ class ProductionService:
             self._tasks.pop(job_id, None)
 
         task.add_done_callback(_finished)
+
+    async def rerender_job(self, job_id: str) -> ProductionJob:
+        """Re-run only render + verify after caption edits or settings changes."""
+
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            if job.status == "running":
+                raise ProductionConflict("This production job is already running")
+            stages = list(
+                (
+                    await session.scalars(
+                        select(ProductionStage)
+                        .where(ProductionStage.job_id == job_id)
+                        .order_by(ProductionStage.created_at)
+                    )
+                ).all()
+            )
+            targets = [stage for stage in stages if stage.key in {"render", "verify"}]
+            if not targets:
+                raise ProductionConflict(
+                    "This job has no render stage to re-run. Start a new production."
+                )
+            for stage in targets:
+                stage.status = "queued"
+                stage.error = None
+                stage.finished_at = None
+                stage.duration_ms = None
+                stage.logs = [
+                    *(stage.logs or []),
+                    _log_entry("info", "Re-queued to re-render with the current captions."),
+                ]
+            job.status = "running"
+            job.current_stage = None
+            job.error = None
+            job.finished_at = None
+            job.logs = [
+                *(job.logs or []),
+                _log_entry(
+                    "info",
+                    "Re-rendering both aspect ratios with the current caption track.",
+                ),
+            ]
+            await session.commit()
+        self._spawn(job_id)
+        return job
 
     async def retry_job(self, job_id: str) -> ProductionJob:
         async with self._session_factory() as session:
@@ -422,6 +481,8 @@ class ProductionService:
             return await self._stage_assets(job_id)
         if stage_key == "narrate":
             return await self._stage_narrate(job_id)
+        if stage_key == "captions":
+            return await self._stage_captions(job_id)
         if stage_key == "render":
             return await self._stage_render(job_id)
         if stage_key == "verify":
@@ -632,8 +693,64 @@ class ProductionService:
             )
             if narration is None:
                 raise ProductionError("Narration was not produced for this script")
+            if force and self._caption_service is not None:
+                await self._caption_service.mark_stale_for_narration(
+                    session,
+                    narration.id,
+                    "Narration was regenerated; captions may no longer match the new audio.",
+                )
             return StageResult(
                 f"Narrated {narration.duration_seconds:.1f}s at {narration.sample_rate} Hz."
+            )
+
+    async def _stage_captions(self, job_id: str) -> StageResult:
+        if self._caption_service is None:
+            return StageResult(
+                "Caption generation is not configured; the renderer will use scene captions.",
+                level="warning",
+            )
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            if not bool((job.config_json or {}).get("captions", True)):
+                return StageResult("Captions are disabled for this job.")
+            narration = await session.scalar(
+                select(NarrationAudio).where(NarrationAudio.script_id == job.script_id)
+            )
+            if narration is None:
+                raise ProductionError(
+                    "Narration is missing, so captions cannot be aligned to speech. "
+                    "Run the narration stage first."
+                )
+            track = await self._caption_service.get_for_narration(session, narration.id)
+            if track is not None and track.cues_json and not track.stale:
+                return StageResult(
+                    f"Using existing caption track ({len(track.cues_json)} cue(s), "
+                    f"{track.source})."
+                )
+            if track is not None and track.stale and track.edited:
+                raise ProductionError(
+                    "The narration changed after these captions were manually edited. "
+                    "Open the caption editor, review the stale track, and choose "
+                    "Regenerate to confirm replacing the edits before re-rendering."
+                )
+            try:
+                track = await self._caption_service.ensure_for_narration(
+                    session, narration
+                )
+            except ValueError as exc:
+                raise ProductionError(
+                    f"Caption generation failed: {exc}"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001 - surfaced as an actionable stage error
+                raise ProductionError(
+                    "Caption generation failed unexpectedly: "
+                    f"{exc}. Check the narration audio and caption settings, then retry."
+                ) from exc
+            return StageResult(
+                f"Generated {len(track.cues_json or [])} caption cue(s) from "
+                f"{track.source_detail or track.source}."
             )
 
     async def _stage_render(self, job_id: str) -> StageResult:
@@ -728,6 +845,53 @@ class ProductionService:
                     raise ProductionError(
                         f"{variant.aspect_ratio} output file is missing on disk"
                     )
+            captions_enabled = bool((job.config_json or {}).get("captions", True))
+            if captions_enabled and self._caption_service is not None:
+                track = await self._caption_service.get_for_script(session, job.script_id)
+                if track is None or not track.cues_json:
+                    raise ProductionError(
+                        "Captions are enabled but no caption track exists for this job. "
+                        "Generate captions in the editor, then re-render."
+                    )
+                if track.stale:
+                    raise ProductionError(
+                        "The caption track is stale because the narration changed. "
+                        "Regenerate captions in the editor, then re-render."
+                    )
+                if track.status not in {"ready", "edited", "completed"}:
+                    raise ProductionError(
+                        f"The caption track is '{track.status}', not ready for review. "
+                        "Open the caption editor and resolve the reported checks."
+                    )
+                if not track.srt_path or not Path(track.srt_path).is_file():
+                    raise ProductionError(
+                        "The caption SRT sidecar is missing on disk. Re-save the caption "
+                        "track, then re-render."
+                    )
+                narration = await session.get(
+                    NarrationAudio, track.narration_audio_id
+                ) if track.narration_audio_id else None
+                if narration is not None:
+                    cues = [
+                        CaptionCue.from_dict(item) for item in (track.cues_json or [])
+                    ]
+                    last_end = max((cue.end for cue in cues), default=0.0)
+                    drift = abs(last_end - float(narration.duration_seconds or 0.0))
+                    if drift > 2.0:
+                        raise ProductionError(
+                            f"The final caption ends {drift:.2f}s from the end of the "
+                            "narration. Re-time or regenerate the captions before "
+                            "re-rendering."
+                        )
+                for variant in variants:
+                    if not any(
+                        check.get("name") == "caption_track"
+                        for check in (variant.checks_json or [])
+                    ):
+                        warnings.append(
+                            f"{variant.aspect_ratio}: no caption check was recorded; "
+                            "confirm captions in the rendered file."
+                        )
             quality = evaluate_video_quality(
                 render, script, self._settings.approval_min_video_bytes
             )
@@ -794,6 +958,79 @@ def _aspects_for(value: str) -> list[str]:
     if value == "both":
         return ["16:9", "9:16"]
     return [value]
+
+
+async def _caption_payload(
+    session: AsyncSession, job: ProductionJob, script: NewsScript | None
+) -> dict[str, Any] | None:
+    """Dashboard-safe caption summary; the full editor uses the caption API."""
+
+    if script is None:
+        return None
+    narration = await session.scalar(
+        select(NarrationAudio).where(NarrationAudio.script_id == script.id)
+    )
+    track = await session.scalar(
+        select(CaptionTrack).where(CaptionTrack.script_id == script.id)
+    )
+    if track is None:
+        return {
+            "id": None,
+            "script_id": script.id,
+            "status": "not_generated",
+            "preset_key": None,
+            "language": None,
+            "source": None,
+            "source_label": None,
+            "source_detail": None,
+            "edited": False,
+            "stale": False,
+            "stale_reason": None,
+            "revision": 0,
+            "cues": [],
+            "settings": None,
+            "checks": [],
+            "warnings": [],
+            "duration_seconds": narration.duration_seconds if narration else None,
+            "srt_url": None,
+            "vtt_url": None,
+            "ass_urls": {},
+            "can_generate": narration is not None,
+            "blocking_reason": (
+                None if narration is not None else "Generate the narration first."
+            ),
+        }
+    settings = CaptionSettings.from_dict(
+        track.settings_json, preset_settings(track.preset_key)
+    )
+    cues = [CaptionCue.from_dict(item) for item in (track.cues_json or [])]
+    return {
+        "id": track.id,
+        "script_id": track.script_id,
+        "status": track.status,
+        "preset_key": track.preset_key,
+        "language": track.language,
+        "source": track.source,
+        "source_label": SOURCE_LABELS.get(track.source, track.source),
+        "source_detail": track.source_detail,
+        "edited": bool(track.edited),
+        "stale": bool(track.stale),
+        "stale_reason": track.stale_reason,
+        "revision": track.revision,
+        "cues": [cue.to_dict() for cue in cues],
+        "settings": settings.to_dict(),
+        "checks": track.checks_json or [],
+        "warnings": track.warnings or [],
+        "duration_seconds": narration.duration_seconds if narration else None,
+        "srt_url": f"/api/v1/captions/tracks/{track.id}/export/srt",
+        "vtt_url": f"/api/v1/captions/tracks/{track.id}/export/vtt",
+        "ass_urls": {
+            aspect: f"/api/v1/captions/tracks/{track.id}/export/ass?aspect={aspect}"
+            for aspect in ("16:9", "9:16")
+        },
+        "can_generate": narration is not None,
+        "blocking_reason": None,
+    }
 
 
 async def _missing_asset_files(
@@ -1062,6 +1299,7 @@ async def build_job_detail(
         }
         for variant in variants
     ]
+    caption_track_payload = await _caption_payload(session, job, script)
     return {
         "id": job.id,
         "status": job.status,
@@ -1096,6 +1334,7 @@ async def build_job_detail(
             for stage in stages
         ],
         "variants": variant_payload,
+        "caption_track": caption_track_payload,
         "scenes": scenes,
         "title": script.title if script else None,
         "article_title": article.title if article else None,
@@ -1247,6 +1486,15 @@ def build_config(settings: Settings) -> dict[str, Any]:
         "ffmpeg_available": ffmpeg is not None,
         "piper_available": piper_ready,
         "captions_available": settings.video_captions_enabled,
+        "caption_presets": list_caption_presets(),
+        "caption_defaults": {
+            "preset_key": settings.caption_default_preset,
+            "burn_in": settings.caption_burn_in_default,
+            "soft_subs": settings.caption_soft_subs_default,
+            "sidecar": settings.caption_sidecar_default,
+            "transcription_provider": settings.caption_transcription_provider,
+        },
+        "caption_transcription": transcription_status(),
         "music_dir": str(settings.audio_music_dir),
         "destination_options": list(DESTINATIONS),
         "aspect_options": ["both", "16:9", "9:16"],

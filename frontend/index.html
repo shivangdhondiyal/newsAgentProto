@@ -408,6 +408,308 @@
                   </section>
                 </div>
 
+                <section
+                  class="caption-editor"
+                  id="caption-editor"
+                  aria-labelledby="caption-editor-heading"
+                >
+                  <div class="caption-editor-head">
+                    <div>
+                      <h3 id="caption-editor-heading">Captions</h3>
+                      <p class="panel-subtitle" id="caption-source">
+                        Captions are generated from the final narration audio.
+                      </p>
+                    </div>
+                    <div class="chips" id="caption-status-chips"></div>
+                  </div>
+
+                  <div class="caption-stale" id="caption-stale" hidden></div>
+
+                  <div class="caption-toolbar">
+                    <label class="caption-toolbar-label" for="caption-preset">Preset</label>
+                    <select class="input compact" id="caption-preset"></select>
+                    <button class="button small primary" id="caption-generate" type="button">
+                      Generate captions
+                    </button>
+                    <button class="button small" id="caption-regenerate" type="button">
+                      Regenerate
+                    </button>
+                    <button class="button small" id="caption-rerender" type="button">
+                      Re-render video
+                    </button>
+                    <label class="button ghost small" for="caption-import-file">
+                      Import SRT/VTT
+                    </label>
+                    <input
+                      id="caption-import-file"
+                      type="file"
+                      accept=".srt,.vtt,text/vtt,application/x-subrip"
+                      hidden
+                    />
+                    <a class="button ghost small" id="caption-export-srt" href="#" download>
+                      Export SRT
+                    </a>
+                    <a class="button ghost small" id="caption-export-vtt" href="#" download>
+                      Export VTT
+                    </a>
+                  </div>
+
+                  <div class="caption-workspace">
+                    <div class="caption-preview">
+                      <div class="caption-stage" id="caption-stage" data-aspect="16:9">
+                        <video id="caption-video" controls playsinline preload="metadata"></video>
+                        <div class="caption-overlay" id="caption-overlay" aria-hidden="true"></div>
+                        <div class="caption-empty" id="caption-preview-empty">
+                          The video preview appears after the first render. You can still
+                          edit and export captions now.
+                        </div>
+                      </div>
+                      <div class="caption-preview-bar">
+                        <label for="caption-aspect">Preview format</label>
+                        <select class="input compact" id="caption-aspect">
+                          <option value="16:9">16:9 landscape</option>
+                          <option value="9:16">9:16 vertical</option>
+                        </select>
+                        <span class="muted" id="caption-preview-time">0.00s</span>
+                        <span class="muted" id="caption-preview-note"></span>
+                      </div>
+                    </div>
+
+                    <div class="caption-cue-column">
+                      <div
+                        class="caption-timeline"
+                        id="caption-timeline"
+                        aria-hidden="true"
+                      >
+                        <div class="caption-playhead" id="caption-playhead"></div>
+                      </div>
+                      <div
+                        class="caption-cue-list"
+                        id="caption-cues"
+                        role="group"
+                        aria-label="Caption cues"
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div class="caption-edit" id="caption-edit">
+                    <div class="form-row">
+                      <label for="caption-text">Cue text</label>
+                      <textarea
+                        class="input"
+                        id="caption-text"
+                        rows="2"
+                        placeholder="Select a cue to edit its text."
+                      ></textarea>
+                    </div>
+                    <div class="caption-edit-grid">
+                      <div class="form-row">
+                        <label for="caption-start">Start (seconds)</label>
+                        <input class="input" id="caption-start" type="number" min="0" step="0.01" />
+                      </div>
+                      <div class="form-row">
+                        <label for="caption-end">End (seconds)</label>
+                        <input class="input" id="caption-end" type="number" min="0" step="0.01" />
+                      </div>
+                      <div class="form-row">
+                        <label for="caption-speaker">Speaker label</label>
+                        <input class="input" id="caption-speaker" type="text" maxlength="120" />
+                      </div>
+                    </div>
+                    <div class="caption-edit-actions">
+                      <button class="button small primary" id="caption-save-cue" type="button">
+                        Save cue
+                      </button>
+                      <button class="button small" id="caption-split" type="button">
+                        Split at playhead
+                      </button>
+                      <button class="button small" id="caption-merge-next" type="button">
+                        Merge with next
+                      </button>
+                      <button class="button small" id="caption-add-cue" type="button">
+                        Add cue
+                      </button>
+                      <button class="button ghost small" id="caption-delete-cue" type="button">
+                        Delete cue
+                      </button>
+                    </div>
+                  </div>
+
+                  <details class="caption-style" id="caption-style-panel">
+                    <summary>Caption style</summary>
+                    <div class="caption-style-body">
+                      <p class="field-hint" id="caption-style-hint">
+                        Typography and placement are saved per aspect ratio.
+                      </p>
+                      <div class="caption-style-grid">
+                        <div class="form-row">
+                          <label for="caption-font-family">Font family</label>
+                          <select class="input compact" id="caption-font-family"></select>
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-font-weight">Weight</label>
+                          <select class="input compact" id="caption-font-weight">
+                            <option value="regular">Regular</option>
+                            <option value="medium">Medium</option>
+                            <option value="semibold">Semibold</option>
+                            <option value="bold">Bold</option>
+                          </select>
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-text-color">Text colour</label>
+                          <input class="input color-input" id="caption-text-color" type="color" />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-highlight-color">Highlight colour</label>
+                          <input
+                            class="input color-input"
+                            id="caption-highlight-color"
+                            type="color"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-background-opacity">Background opacity</label>
+                          <input
+                            class="input"
+                            id="caption-background-opacity"
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-background-padding">Background padding</label>
+                          <input
+                            class="input"
+                            id="caption-background-padding"
+                            type="number"
+                            min="0"
+                            max="48"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-outline">Outline</label>
+                          <input class="input" id="caption-outline" type="number" min="0" max="10" />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-shadow">Shadow</label>
+                          <input class="input" id="caption-shadow" type="number" min="0" max="10" />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-alignment">Alignment</label>
+                          <select class="input compact" id="caption-alignment">
+                            <option value="left">Left</option>
+                            <option value="center">Center</option>
+                            <option value="right">Right</option>
+                          </select>
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-vertical">Vertical position</label>
+                          <select class="input compact" id="caption-vertical">
+                            <option value="bottom">Bottom</option>
+                            <option value="center">Center</option>
+                            <option value="top">Top</option>
+                          </select>
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-max-chars">Max characters per line</label>
+                          <input
+                            class="input"
+                            id="caption-max-chars"
+                            type="number"
+                            min="10"
+                            max="80"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-max-words">Max words per line</label>
+                          <input
+                            class="input"
+                            id="caption-max-words"
+                            type="number"
+                            min="2"
+                            max="20"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-max-lines">Max lines</label>
+                          <input class="input" id="caption-max-lines" type="number" min="1" max="4" />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-font-size">Font size (reference px)</label>
+                          <input
+                            class="input"
+                            id="caption-font-size"
+                            type="number"
+                            min="20"
+                            max="120"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-offset">Timing offset (ms)</label>
+                          <input
+                            class="input"
+                            id="caption-offset"
+                            type="number"
+                            min="-5000"
+                            max="5000"
+                            step="10"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-safe-bottom">Bottom safe area (%)</label>
+                          <input
+                            class="input"
+                            id="caption-safe-bottom"
+                            type="number"
+                            min="0"
+                            max="40"
+                            step="1"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="caption-safe-margin">Side safe margin (%)</label>
+                          <input
+                            class="input"
+                            id="caption-safe-margin"
+                            type="number"
+                            min="0"
+                            max="30"
+                            step="1"
+                          />
+                        </div>
+                      </div>
+                      <div class="caption-style-toggles">
+                        <label class="checkbox-row">
+                          <input id="caption-speaker-labels" type="checkbox" />
+                          <span>Show speaker labels</span>
+                        </label>
+                        <label class="checkbox-row">
+                          <input id="caption-emphasis" type="checkbox" />
+                          <span>Emphasise names, numbers, and quotes</span>
+                        </label>
+                        <label class="checkbox-row">
+                          <input id="caption-word-highlight" type="checkbox" />
+                          <span>Highlight the spoken word (restrained, no karaoke colour)</span>
+                        </label>
+                        <label class="checkbox-row">
+                          <input id="caption-uppercase" type="checkbox" />
+                          <span>Uppercase caption text</span>
+                        </label>
+                      </div>
+                      <div class="form-actions">
+                        <button class="button small primary" id="caption-apply-style" type="button">
+                          Apply style
+                        </button>
+                        <span class="muted" id="caption-style-note"></span>
+                      </div>
+                    </div>
+                  </details>
+
+                  <div class="caption-checks" id="caption-checks"></div>
+                </section>
+
                 <details class="production-log" open>
                   <summary>Stage log</summary>
                   <ol id="prod-logs"></ol>

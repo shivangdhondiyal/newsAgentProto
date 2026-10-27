@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -321,9 +322,49 @@ class NarrationChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CaptionTrack(Base):
+    """A persisted, editable caption track for one narration and script.
+
+    Cues are stored as JSON because the editor saves the whole track atomically.
+    Manual edits survive regeneration through the ``edited`` flag; a changed
+    narration sets ``stale`` so the pipeline cannot silently render stale timing.
+    """
+
+    __tablename__ = "caption_tracks"
+    __table_args__ = (UniqueConstraint("script_id", name="uq_caption_track_script"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        ForeignKey("news_scripts.id", ondelete="CASCADE"), index=True
+    )
+    narration_audio_id: Mapped[str | None] = mapped_column(
+        ForeignKey("narration_audio.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), default="not_generated", index=True)
+    preset_key: Mapped[str] = mapped_column(String(60), default="clean_editorial")
+    language: Mapped[str] = mapped_column(String(16), default="en")
+    source: Mapped[str] = mapped_column(String(40), default="narration_alignment")
+    source_detail: Mapped[str] = mapped_column(Text, default="")
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    cues_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    checks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    audio_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    srt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vtt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ass_paths: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class VideoRender(Base):
     """A draft local video render awaiting manual approval before any publishing action."""
-
     __tablename__ = "video_renders"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

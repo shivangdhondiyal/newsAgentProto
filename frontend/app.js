@@ -151,6 +151,11 @@
       selectedJobId: null,
       pollTimer: null,
       loading: false,
+      captionConfig: null,
+      caption: null,
+      captionCueIndex: null,
+      captionAspect: "16:9",
+      captionBusy: false,
     },
   };
 
@@ -262,7 +267,42 @@
     unknown: "muted",
     interrupted: "warning",
     skipped: "muted",
+    not_generated: "muted",
+    generating: "info",
+    edited: "warning",
+    rendering: "info",
   };
+
+  const CAPTION_TONES = {
+    not_generated: "muted",
+    generating: "info",
+    ready: "success",
+    edited: "warning",
+    rendering: "info",
+    completed: "success",
+    failed: "danger",
+  };
+
+  const CAPTION_STATUS_LABELS = {
+    not_generated: "Not generated",
+    generating: "Generating",
+    ready: "Ready for review",
+    edited: "Edited",
+    rendering: "Rendering",
+    completed: "Completed",
+    failed: "Failed",
+  };
+
+  function captionTone(status) {
+    return CAPTION_TONES[String(status || "not_generated")] || "muted";
+  }
+
+  function captionStatusBadge(status) {
+    const value = String(status || "not_generated");
+    return `<span class="badge" data-tone="${esc(captionTone(value))}">${esc(
+      CAPTION_STATUS_LABELS[value] || value.replaceAll("_", " "),
+    )}</span>`;
+  }
 
   function statusTone(status) {
     return STATUS_TONES[String(status || "unknown")] || "muted";
@@ -3161,6 +3201,7 @@
       const warningNode = $("#prod-job-warnings");
       if (warningNode) warningNode.hidden = true;
     }
+    renderCaptionEditor();
   }
 
   function renderProductionError(message) {
@@ -3179,10 +3220,20 @@
 
   async function loadProductionJob(id, { silent = false } = {}) {
     const job = await api(`/production/jobs/${encodeURIComponent(id)}`);
-    productionState().job = job;
-    productionState().selectedJobId = id;
+    const prod = productionState();
+    if (prod.selectedJobId !== id) {
+      prod.caption = null;
+      prod.captionCueIndex = null;
+      prod.captionDraft = null;
+      prod.captionStyleKey = null;
+      prod.captionStyleAspect = null;
+      prod.captionStatusOverride = null;
+    }
+    prod.job = job;
+    prod.selectedJobId = id;
     renderProductionJob();
     if (JOB_ACTIVE.has(job.status)) ensureProductionPolling();
+    await loadCaptionJob(id);
     return job;
   }
 
@@ -3207,6 +3258,7 @@
         prod.config = await api("/production/config");
         renderProductionConfig();
       }
+      await loadCaptionConfig();
       await loadProductionLists({ silent });
       const target =
         prod.selectedJobId &&
@@ -3332,6 +3384,1305 @@
       renderProductionJob();
       ensureProductionPolling();
       toast("Retrying the failed stage.", "info");
+    });
+  }
+
+  // ---------------------------------------------------------------- captions
+
+  const CAPTION_ASPECT_KEY = { "16:9": "landscape", "9:16": "portrait" };
+
+  const CAPTION_FALLBACK_SETTINGS = {
+    preset_key: "clean_editorial",
+    font_family: "Segoe UI",
+    font_weight: "semibold",
+    text_color: "#FFFFFF",
+    highlight_color: "#9DB2E6",
+    background_opacity: 0.45,
+    background_padding: 12,
+    outline_width: 2,
+    shadow: 1,
+    alignment: "center",
+    timing_offset_ms: 0,
+    speaker_labels: false,
+    word_highlight: false,
+    emphasis: false,
+    uppercase: false,
+    fade_ms: 0,
+    landscape: {
+      font_size: 46,
+      max_chars_per_line: 42,
+      max_words_per_line: 9,
+      max_lines: 2,
+      vertical_position: "bottom",
+      safe_bottom_ratio: 0.08,
+      safe_margin_ratio: 0.06,
+      line_spacing: 1.18,
+    },
+    portrait: {
+      font_size: 58,
+      max_chars_per_line: 26,
+      max_words_per_line: 7,
+      max_lines: 3,
+      vertical_position: "bottom",
+      safe_bottom_ratio: 0.18,
+      safe_margin_ratio: 0.07,
+      line_spacing: 1.18,
+    },
+  };
+
+  function captionState() {
+    return productionState();
+  }
+
+  function captionPayload() {
+    return captionState().caption;
+  }
+
+  function captionTrack() {
+    return captionPayload()?.track || null;
+  }
+
+  function captionCues() {
+    return captionTrack()?.cues || [];
+  }
+
+  function captionPreset(key) {
+    return (captionState().captionConfig?.presets || []).find(
+      (preset) => preset.key === key,
+    );
+  }
+
+  function captionAspect() {
+    return captionState().captionAspect || "16:9";
+  }
+
+  function captionLayoutKey() {
+    return CAPTION_ASPECT_KEY[captionAspect()] || "landscape";
+  }
+
+  function captionDurationSeconds() {
+    const payload = captionPayload();
+    const track = captionTrack();
+    const cues = captionCues();
+    const lastEnd = cues.reduce((max, cue) => Math.max(max, Number(cue.end) || 0), 0);
+    return Math.max(
+      1,
+      Number(payload?.duration_seconds || track?.duration_seconds || lastEnd || 1),
+    );
+  }
+
+  function fmtCueTime(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    const mins = Math.floor(value / 60);
+    const secs = (value % 60).toFixed(2).padStart(5, "0");
+    return `${mins}:${secs}`;
+  }
+
+  function captionSelectedCue() {
+    const cues = captionCues();
+    const index = captionState().captionCueIndex;
+    if (index === null || index === undefined) return null;
+    return cues[index] || null;
+  }
+
+  function cloneCaption(value) {
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  }
+
+  function captionSettingsFromTrack() {
+    const track = captionTrack();
+    if (track?.settings) return cloneCaption(track.settings);
+    const presetKey =
+      $("#caption-preset")?.value ||
+      captionState().captionConfig?.defaults?.preset_key ||
+      "clean_editorial";
+    const preset = captionPreset(presetKey);
+    if (preset?.settings) return cloneCaption(preset.settings);
+    return cloneCaption(CAPTION_FALLBACK_SETTINGS);
+  }
+
+  function numberValue(selector, fallback) {
+    const raw = $(selector)?.value;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function integerValue(selector, fallback) {
+    return Math.round(numberValue(selector, fallback));
+  }
+
+  function collectCaptionSettings() {
+    const prod = captionState();
+    const base =
+      prod.captionDraft ||
+      captionTrack()?.settings ||
+      captionPreset($("#caption-preset")?.value)?.settings ||
+      CAPTION_FALLBACK_SETTINGS;
+    const aspectKey = captionLayoutKey();
+    const layout = {
+      ...(base[aspectKey] || CAPTION_FALLBACK_SETTINGS[aspectKey]),
+      font_size: integerValue("#caption-font-size", base[aspectKey]?.font_size || 46),
+      max_chars_per_line: integerValue(
+        "#caption-max-chars",
+        base[aspectKey]?.max_chars_per_line || 42,
+      ),
+      max_words_per_line: integerValue(
+        "#caption-max-words",
+        base[aspectKey]?.max_words_per_line || 9,
+      ),
+      max_lines: integerValue("#caption-max-lines", base[aspectKey]?.max_lines || 2),
+      vertical_position:
+        $("#caption-vertical")?.value || base[aspectKey]?.vertical_position || "bottom",
+      safe_bottom_ratio: Math.min(
+        0.4,
+        Math.max(0, numberValue("#caption-safe-bottom", 8) / 100),
+      ),
+      safe_margin_ratio: Math.min(
+        0.3,
+        Math.max(0, numberValue("#caption-safe-margin", 6) / 100),
+      ),
+    };
+    const settings = {
+      ...base,
+      preset_key:
+        $("#caption-preset")?.value || base.preset_key || "clean_editorial",
+      font_family:
+        $("#caption-font-family")?.value || base.font_family || "Segoe UI",
+      font_weight:
+        $("#caption-font-weight")?.value || base.font_weight || "semibold",
+      text_color: (
+        $("#caption-text-color")?.value ||
+        base.text_color ||
+        "#FFFFFF"
+      ).toUpperCase(),
+      highlight_color: (
+        $("#caption-highlight-color")?.value ||
+        base.highlight_color ||
+        "#9DB2E6"
+      ).toUpperCase(),
+      background_opacity: Math.min(
+        1,
+        Math.max(0, numberValue("#caption-background-opacity", 45) / 100),
+      ),
+      background_padding: integerValue(
+        "#caption-background-padding",
+        base.background_padding ?? 12,
+      ),
+      outline_width: integerValue("#caption-outline", base.outline_width ?? 2),
+      shadow: integerValue("#caption-shadow", base.shadow ?? 1),
+      alignment: $("#caption-alignment")?.value || base.alignment || "center",
+      timing_offset_ms: integerValue(
+        "#caption-offset",
+        base.timing_offset_ms || 0,
+      ),
+      speaker_labels: Boolean($("#caption-speaker-labels")?.checked),
+      word_highlight: Boolean($("#caption-word-highlight")?.checked),
+      emphasis: Boolean($("#caption-emphasis")?.checked),
+      uppercase: Boolean($("#caption-uppercase")?.checked),
+      fade_ms: Number.isFinite(Number(base.fade_ms)) ? Number(base.fade_ms) : 0,
+    };
+    settings[aspectKey] = layout;
+    return settings;
+  }
+
+  function populateCaptionPresets() {
+    const select = $("#caption-preset");
+    const config = captionState().captionConfig;
+    if (!select || !config) return;
+    if (!select.options.length) {
+      select.innerHTML = (config.presets || [])
+        .map(
+          (preset) =>
+            `<option value="${esc(preset.key)}" title="${esc(
+              preset.description,
+            )}">${esc(preset.name)}</option>`,
+        )
+        .join("");
+    }
+    const track = captionTrack();
+    const target =
+      captionState().captionDraft?.preset_key ||
+      track?.preset_key ||
+      config.defaults?.preset_key ||
+      "clean_editorial";
+    if (select.value !== target) select.value = target;
+  }
+
+  function populateCaptionFonts(settings) {
+    const select = $("#caption-font-family");
+    const config = captionState().captionConfig;
+    if (!select) return;
+    const families = (config?.fonts || []).map((font) => font.family);
+    if (!families.includes(settings.font_family)) families.unshift(settings.font_family);
+    const signature = families.join("|");
+    if (select.dataset.signature !== signature) {
+      select.innerHTML = families
+        .map(
+          (family) =>
+            `<option value="${esc(family)}">${esc(family)}${
+              (config?.fonts || []).find((font) => font.family === family)?.devanagari
+                ? " · Devanagari"
+                : ""
+            }</option>`,
+        )
+        .join("");
+      select.dataset.signature = signature;
+    }
+    select.value = settings.font_family;
+  }
+
+  function populateCaptionStyle(settings, aspect = captionAspect()) {
+    if (!settings) return;
+    const aspectKey = CAPTION_ASPECT_KEY[aspect] || "landscape";
+    const layout = settings[aspectKey] || CAPTION_FALLBACK_SETTINGS[aspectKey];
+    populateCaptionFonts(settings);
+    const set = (selector, value) => {
+      const node = $(selector);
+      if (node) node.value = value;
+    };
+    set("#caption-font-weight", settings.font_weight || "semibold");
+    set("#caption-text-color", settings.text_color || "#FFFFFF");
+    set("#caption-highlight-color", settings.highlight_color || "#9DB2E6");
+    set(
+      "#caption-background-opacity",
+      Math.round((Number(settings.background_opacity) || 0) * 100),
+    );
+    set("#caption-background-padding", settings.background_padding ?? 12);
+    set("#caption-outline", settings.outline_width ?? 2);
+    set("#caption-shadow", settings.shadow ?? 1);
+    set("#caption-alignment", settings.alignment || "center");
+    set("#caption-vertical", layout.vertical_position || "bottom");
+    set("#caption-max-chars", layout.max_chars_per_line || 42);
+    set("#caption-max-words", layout.max_words_per_line || 9);
+    set("#caption-max-lines", layout.max_lines || 2);
+    set("#caption-font-size", layout.font_size || 46);
+    set("#caption-offset", settings.timing_offset_ms || 0);
+    set(
+      "#caption-safe-bottom",
+      Math.round((Number(layout.safe_bottom_ratio) || 0) * 100),
+    );
+    set(
+      "#caption-safe-margin",
+      Math.round((Number(layout.safe_margin_ratio) || 0) * 100),
+    );
+    const check = (selector, value) => {
+      const node = $(selector);
+      if (node) node.checked = Boolean(value);
+    };
+    check("#caption-speaker-labels", settings.speaker_labels);
+    check("#caption-emphasis", settings.emphasis);
+    check("#caption-word-highlight", settings.word_highlight);
+    check("#caption-uppercase", settings.uppercase);
+    const hint = $("#caption-style-hint");
+    if (hint) {
+      hint.textContent = `Editing the ${aspect} layout. Global typography applies to both formats.`;
+    }
+    const note = $("#caption-style-note");
+    if (note) {
+      note.textContent = captionState().captionDraft
+        ? "Preset changed — apply to save."
+        : "";
+    }
+  }
+
+  function wrapPreviewWords(words, maxChars) {
+    const limit = Math.max(8, Number(maxChars) || 42);
+    const lines = [];
+    let line = [];
+    let length = 0;
+    for (const word of words) {
+      const addition = line.length ? word.length + 1 : word.length;
+      if (line.length && length + addition > limit) {
+        lines.push(line);
+        line = [word];
+        length = word.length;
+      } else {
+        line.push(word);
+        length += addition;
+      }
+    }
+    if (line.length) lines.push(line);
+    return lines;
+  }
+
+  function captionPreviewHtml(cue, settings, layout) {
+    if (!cue) return "";
+    let words = String(cue.text || "")
+      .split(/\s+/)
+      .filter(Boolean);
+    if (settings.uppercase) words = words.map((word) => word.toUpperCase());
+    const prefix =
+      settings.speaker_labels && cue.speaker ? [`${cue.speaker}:`] : [];
+    const allWords = [...prefix, ...words];
+    const lines = wrapPreviewWords(allWords, layout.max_chars_per_line);
+    const emphasized = new Set(
+      (cue.words || [])
+        .filter((word) => word.emphasis)
+        .map((word) => (settings.uppercase ? word.text.toUpperCase() : word.text)),
+    );
+    let active = null;
+    if (settings.word_highlight && (cue.words || []).length) {
+      const video = $("#caption-video");
+      const time =
+        video && video.getAttribute("src") && Number.isFinite(video.currentTime)
+          ? video.currentTime
+          : null;
+      if (time !== null && time >= cue.start && time <= cue.end) {
+        const word = cue.words.find(
+          (item) => time >= item.start && time <= item.end,
+        );
+        if (word) active = settings.uppercase ? word.text.toUpperCase() : word.text;
+      }
+    }
+    return lines
+      .map((lineWords) =>
+        lineWords
+          .map((word) => {
+            const classes = ["caption-word"];
+            if (active && word === active) classes.push("active");
+            if (settings.emphasis && emphasized.has(word)) {
+              classes.push("emphasized");
+            }
+            return `<span class="${classes.join(" ")}">${esc(word)}</span>`;
+          })
+          .join(" "),
+      )
+      .join("<br>");
+  }
+
+  function renderCaptionPreview() {
+    const stage = $("#caption-stage");
+    const overlay = $("#caption-overlay");
+    const empty = $("#caption-preview-empty");
+    if (!stage || !overlay) return;
+    const aspect = captionAspect();
+    stage.dataset.aspect = aspect;
+    syncCaptionVideo();
+    const settings = collectCaptionSettings();
+    const aspectKey = captionLayoutKey();
+    const layout = settings[aspectKey] || CAPTION_FALLBACK_SETTINGS[aspectKey];
+    const cue = captionPreviewCue();
+    if (empty) {
+      empty.hidden = Boolean(
+        (productionState().job?.variants || []).some(
+          (variant) => variant.aspect_ratio === aspect,
+        ),
+      );
+    }
+    if (!cue) {
+      overlay.hidden = true;
+      overlay.innerHTML = "";
+      const note = $("#caption-preview-note");
+      if (note) note.textContent = "Select a cue to preview it.";
+      return;
+    }
+    overlay.hidden = false;
+    overlay.innerHTML = captionPreviewHtml(cue, settings, layout);
+    overlay.dataset.position = layout.vertical_position || "bottom";
+    overlay.dataset.alignment = settings.alignment || "center";
+    const height = 1080;
+    overlay.style.setProperty(
+      "--cap-font",
+      `${((Number(layout.font_size) || 46) / height) * 100}cqh`,
+    );
+    overlay.style.setProperty(
+      "--cap-pad-y",
+      `${((Number(settings.background_padding) || 0) / height) * 100}cqh`,
+    );
+    overlay.style.setProperty(
+      "--cap-pad-x",
+      `${((Number(settings.background_padding) || 0) * 1.5 / height) * 100}cqh`,
+    );
+    overlay.style.setProperty(
+      "--cap-outline",
+      `${((Number(settings.outline_width) || 0) / height) * 100}cqh`,
+    );
+    overlay.style.setProperty(
+      "--cap-shadow",
+      `${((Number(settings.shadow) || 0) / height) * 100}cqh`,
+    );
+    overlay.style.setProperty(
+      "--cap-bg",
+      `rgba(6, 9, 13, ${Math.min(
+        1,
+        Math.max(0, Number(settings.background_opacity) || 0),
+      )})`,
+    );
+    overlay.style.setProperty("--cap-color", settings.text_color || "#FFFFFF");
+    overlay.style.setProperty(
+      "--cap-highlight",
+      settings.highlight_color || "#9DB2E6",
+    );
+    overlay.style.setProperty(
+      "--cap-line-height",
+      String(layout.line_spacing || 1.18),
+    );
+    const weights = {
+      regular: 400,
+      medium: 500,
+      semibold: 600,
+      bold: 700,
+    };
+    overlay.style.setProperty(
+      "--cap-weight",
+      String(weights[settings.font_weight] || 600),
+    );
+    overlay.style.setProperty("--cap-font-family", settings.font_family || "Segoe UI");
+    const margin = (Number(layout.safe_margin_ratio) || 0) * 100;
+    overlay.style.left = `${margin}%`;
+    overlay.style.right = `${margin}%`;
+    overlay.style.transform = "none";
+    overlay.style.top = "auto";
+    overlay.style.bottom = "auto";
+    if (layout.vertical_position === "top") {
+      overlay.style.top = `${margin}%`;
+    } else if (layout.vertical_position === "center") {
+      overlay.style.top = "50%";
+      overlay.style.transform = "translateY(-50%)";
+    } else {
+      overlay.style.bottom = `${(Number(layout.safe_bottom_ratio) || 0) * 100}%`;
+    }
+    const note = $("#caption-preview-note");
+    if (note) {
+      note.textContent = settings.word_highlight
+        ? "Word highlighting and emphasis appear in the rendered video."
+        : "";
+    }
+  }
+
+  function captionPreviewCue() {
+    const cues = captionCues();
+    if (!cues.length) return null;
+    const video = $("#caption-video");
+    if (video && video.getAttribute("src") && Number.isFinite(video.currentTime)) {
+      const active = cues.find(
+        (cue) => video.currentTime >= cue.start && video.currentTime <= cue.end,
+      );
+      if (active) return active;
+    }
+    return captionSelectedCue() || cues[0];
+  }
+
+  function syncCaptionVideo() {
+    const video = $("#caption-video");
+    if (!video) return;
+    const job = productionState().job;
+    const aspect = captionAspect();
+    const variant = (job?.variants || []).find(
+      (item) => item.aspect_ratio === aspect,
+    );
+    const url = variant?.file_url || "";
+    if (url && video.getAttribute("src") !== url) {
+      video.src = url;
+      video.load();
+    } else if (!url && video.getAttribute("src")) {
+      video.removeAttribute("src");
+      video.load();
+    }
+  }
+
+  function updateCaptionPlayhead() {
+    const video = $("#caption-video");
+    const playhead = $("#caption-playhead");
+    const label = $("#caption-preview-time");
+    const duration = captionDurationSeconds();
+    let time = 0;
+    if (video && video.getAttribute("src") && Number.isFinite(video.currentTime)) {
+      time = video.currentTime;
+    } else {
+      const cue = captionSelectedCue();
+      time = cue ? cue.start : 0;
+    }
+    if (playhead) {
+      playhead.style.left = `${Math.min(100, Math.max(0, (time / duration) * 100))}%`;
+    }
+    if (label) label.textContent = `${time.toFixed(2)}s / ${duration.toFixed(2)}s`;
+    renderCaptionPreview();
+  }
+
+  function renderCaptionCues() {
+    const list = $("#caption-cues");
+    if (!list) return;
+    const track = captionTrack();
+    const cues = captionCues();
+    if (!track) {
+      list.innerHTML = `<p class="muted caption-empty-note">Captions have not been generated for this job yet.</p>`;
+      return;
+    }
+    if (!cues.length) {
+      list.innerHTML = `<p class="muted caption-empty-note">This track has no cues. Regenerate or import a subtitle file.</p>`;
+      return;
+    }
+    const index = captionState().captionCueIndex;
+    list.innerHTML = cues
+      .map((cue, position) => {
+        const selected = position === index;
+        const speaker = cue.speaker
+          ? `<span class="caption-cue-speaker">${esc(cue.speaker)}</span>`
+          : "";
+        return `<button class="caption-cue${
+          selected ? " selected" : ""
+        }" type="button" data-caption-cue="${position}" ${
+          selected ? 'aria-current="true"' : ""
+        }>
+          <span class="caption-cue-head">
+            <span class="caption-cue-time">${fmtCueTime(cue.start)} → ${fmtCueTime(
+              cue.end,
+            )}</span>
+            ${speaker}
+          </span>
+          <span class="caption-cue-text">${esc(cue.text)}</span>
+        </button>`;
+      })
+      .join("");
+  }
+
+  function renderCaptionTimeline() {
+    const timeline = $("#caption-timeline");
+    if (!timeline) return;
+    const duration = captionDurationSeconds();
+    const index = captionState().captionCueIndex;
+    const blocks = captionCues()
+      .map((cue, position) => {
+        const left = (Math.max(0, Number(cue.start) || 0) / duration) * 100;
+        const width = Math.max(
+          0.6,
+          (((Number(cue.end) || 0) - (Number(cue.start) || 0)) / duration) * 100,
+        );
+        return `<span class="caption-timeline-block${
+          position === index ? " selected" : ""
+        }" style="left:${left.toFixed(3)}%;width:${width.toFixed(
+          3,
+        )}%" title="${esc(
+          `${fmtCueTime(cue.start)} → ${fmtCueTime(cue.end)} · ${cue.text}`,
+        )}"></span>`;
+      })
+      .join("");
+    timeline.innerHTML = `${blocks}<div class="caption-playhead" id="caption-playhead"></div>`;
+    updateCaptionPlayhead();
+  }
+
+  function renderCaptionChecks() {
+    const node = $("#caption-checks");
+    if (!node) return;
+    const track = captionTrack();
+    if (!track) {
+      node.innerHTML = `<p class="muted">Readability and timing checks appear after captions are generated.</p>`;
+      return;
+    }
+    const tones = { passed: "success", warning: "warning", failed: "danger" };
+    const checks = track.checks || [];
+    const warnings = track.warnings || [];
+    node.innerHTML = `
+      <h4>Readability and timing checks</h4>
+      ${
+        checks.length
+          ? `<ul class="caption-check-list">${checks
+              .map(
+                (check) => `<li data-tone="${esc(
+                  tones[check.status] || "muted",
+                )}">${statusDot(tones[check.status] || "muted")}<span><strong>${esc(
+                  String(check.name || "").replaceAll("_", " "),
+                )}</strong> ${esc(check.detail)}</span></li>`,
+              )
+              .join("")}</ul>`
+          : `<p class="muted">No checks recorded.</p>`
+      }
+      ${
+        warnings.length
+          ? `<div class="caption-warning-list"><strong>Notes</strong><ul>${warnings
+              .map((warning) => `<li>${esc(warning)}</li>`)
+              .join("")}</ul></div>`
+          : ""
+      }`;
+  }
+
+  function renderCaptionEditForm() {
+    const cue = captionSelectedCue();
+    const fields = [
+      "#caption-text",
+      "#caption-start",
+      "#caption-end",
+      "#caption-speaker",
+    ];
+    fields.forEach((selector) => {
+      const node = $(selector);
+      if (node) node.disabled = !cue;
+    });
+    const buttons = [
+      "#caption-save-cue",
+      "#caption-split",
+      "#caption-delete-cue",
+    ];
+    buttons.forEach((selector) => {
+      const node = $(selector);
+      if (node) node.disabled = !cue;
+    });
+    const merge = $("#caption-merge-next");
+    if (merge) {
+      const cues = captionCues();
+      const index = captionState().captionCueIndex;
+      merge.disabled = !cue || index === null || index >= cues.length - 1;
+    }
+    const active = document.activeElement;
+    if (!cue) {
+      fields.forEach((selector) => {
+        const node = $(selector);
+        if (node && node !== active) node.value = "";
+      });
+      return;
+    }
+    const text = $("#caption-text");
+    if (text && text !== active) text.value = cue.text || "";
+    const start = $("#caption-start");
+    if (start && start !== active) start.value = Number(cue.start || 0).toFixed(2);
+    const end = $("#caption-end");
+    if (end && end !== active) end.value = Number(cue.end || 0).toFixed(2);
+    const speaker = $("#caption-speaker");
+    if (speaker && speaker !== active) speaker.value = cue.speaker || "";
+  }
+
+  function renderCaptionEditor() {
+    const editor = $("#caption-editor");
+    if (!editor) return;
+    const prod = captionState();
+    const payload = captionPayload();
+    const track = captionTrack();
+    populateCaptionPresets();
+
+    const styleKey = track ? `${track.id}:${track.revision || 0}` : "none";
+    const aspect = captionAspect();
+    if (!prod.captionDraft) {
+      if (prod.captionStyleKey !== styleKey) {
+        populateCaptionStyle(captionSettingsFromTrack(), aspect);
+        prod.captionStyleKey = styleKey;
+        prod.captionStyleAspect = aspect;
+      } else if (prod.captionStyleAspect !== aspect) {
+        populateCaptionStyle(captionSettingsFromTrack(), aspect);
+        prod.captionStyleAspect = aspect;
+      }
+    } else if (prod.captionStyleAspect !== aspect) {
+      populateCaptionStyle(prod.captionDraft, aspect);
+      prod.captionStyleAspect = aspect;
+    }
+
+    const chips = $("#caption-status-chips");
+    if (chips) {
+      const status =
+        prod.captionStatusOverride || track?.status || "not_generated";
+      chips.innerHTML = `${captionStatusBadge(status)}${
+        track?.edited ? `<span class="chip">Manual edits</span>` : ""
+      }${track?.stale ? badge("warning", "Stale") : ""}${
+        track ? `<span class="chip">${esc(track.source_label || track.source)}</span>` : ""
+      }`;
+    }
+
+    const source = $("#caption-source");
+    if (source) {
+      if (track) {
+        const bits = [
+          track.source_label || track.source,
+          track.source_detail,
+          String(track.language || "").toUpperCase(),
+          `revision ${track.revision}`,
+        ].filter(Boolean);
+        source.textContent = bits.join(" · ");
+      } else {
+        source.textContent =
+          payload?.blocking_reason ||
+          "Captions are generated from the final narration audio. Generate them after the voiceover is ready.";
+      }
+    }
+
+    const stale = $("#caption-stale");
+    if (stale) {
+      if (track?.stale) {
+        stale.hidden = false;
+        stale.innerHTML = `<strong>Captions may not match the narration</strong><p>${esc(
+          track.stale_reason ||
+            "The narration changed after these captions were created. Regenerate them before rendering.",
+        )}</p>`;
+      } else {
+        stale.hidden = true;
+        stale.innerHTML = "";
+      }
+    }
+
+    const busy = prod.captionBusy;
+    const hasTrack = Boolean(track);
+    const generate = $("#caption-generate");
+    if (generate) {
+      generate.disabled = busy || hasTrack || !payload?.can_generate;
+      generate.title = hasTrack
+        ? "Captions already exist for this narration. Use Regenerate."
+        : payload?.blocking_reason || "";
+    }
+    const regenerate = $("#caption-regenerate");
+    if (regenerate) regenerate.disabled = busy || !hasTrack;
+    const rerender = $("#caption-rerender");
+    if (rerender) {
+      const ready = ["ready", "edited", "completed"].includes(track?.status);
+      rerender.disabled = busy || !hasTrack || !ready;
+      rerender.title = ready
+        ? ""
+        : "Captions must be ready or edited before the video can be re-rendered.";
+    }
+    const preset = $("#caption-preset");
+    if (preset) preset.disabled = busy;
+    const apply = $("#caption-apply-style");
+    if (apply) apply.disabled = busy || !hasTrack;
+    const importInput = $("#caption-import-file");
+    if (importInput) importInput.disabled = busy || !hasTrack;
+
+    const srt = $("#caption-export-srt");
+    if (srt) {
+      srt.href = track?.srt_url || "#";
+      srt.setAttribute("aria-disabled", track ? "false" : "true");
+    }
+    const vtt = $("#caption-export-vtt");
+    if (vtt) {
+      vtt.href = track?.vtt_url || "#";
+      vtt.setAttribute("aria-disabled", track ? "false" : "true");
+    }
+
+    renderCaptionCues();
+    renderCaptionTimeline();
+    renderCaptionEditForm();
+    renderCaptionChecks();
+    renderCaptionPreview();
+  }
+
+  async function loadCaptionConfig() {
+    const prod = captionState();
+    if (prod.captionConfig) return;
+    try {
+      prod.captionConfig = await api("/captions/config");
+      populateCaptionPresets();
+      if (!captionTrack() && !prod.captionDraft) {
+        populateCaptionStyle(captionSettingsFromTrack(), captionAspect());
+        prod.captionStyleKey = "none";
+      }
+    } catch (error) {
+      prod.captionConfig = null;
+    }
+  }
+
+  async function loadCaptionJob(jobId) {
+    const prod = captionState();
+    try {
+      const payload = await api(`/captions/jobs/${encodeURIComponent(jobId)}`);
+      if (prod.selectedJobId !== jobId) return;
+      prod.caption = payload;
+      const cues = payload.track?.cues || [];
+      if (!cues.length) {
+        prod.captionCueIndex = null;
+      } else if (
+        prod.captionCueIndex === null ||
+        prod.captionCueIndex === undefined ||
+        prod.captionCueIndex >= cues.length
+      ) {
+        prod.captionCueIndex = 0;
+      }
+      renderCaptionEditor();
+    } catch (error) {
+      if (prod.selectedJobId !== jobId) return;
+      prod.caption = null;
+      renderCaptionEditor();
+    }
+  }
+
+  function selectCaptionCue(index, { seek = true, time = null } = {}) {
+    const cues = captionCues();
+    if (!cues[index]) return;
+    const prod = captionState();
+    prod.captionCueIndex = index;
+    const video = $("#caption-video");
+    if (seek && video && video.getAttribute("src")) {
+      video.currentTime = Math.max(
+        0,
+        Number.isFinite(time) ? time : Number(cues[index].start) || 0,
+      );
+    }
+    renderCaptionCues();
+    renderCaptionTimeline();
+    renderCaptionEditForm();
+    renderCaptionPreview();
+  }
+
+  function captionTrackFromResponse(track, { resetDraft = true } = {}) {
+    const prod = captionState();
+    prod.caption = { ...(prod.caption || {}), track };
+    if (resetDraft) {
+      prod.captionDraft = null;
+      prod.captionStyleKey = null;
+    }
+    const cues = track?.cues || [];
+    if (!cues.length) prod.captionCueIndex = null;
+    else if (
+      prod.captionCueIndex === null ||
+      prod.captionCueIndex === undefined ||
+      prod.captionCueIndex >= cues.length
+    ) {
+      prod.captionCueIndex = 0;
+    }
+    renderCaptionEditor();
+  }
+
+  async function generateCaptions(button) {
+    const job = productionState().job;
+    if (!job) return;
+    const presetKey = $("#caption-preset")?.value;
+    await withButton(button, "Generating…", async () => {
+      captionState().captionBusy = true;
+      captionState().captionStatusOverride = "generating";
+      renderCaptionEditor();
+      try {
+        const track = await api(
+          `/captions/jobs/${encodeURIComponent(job.id)}/generate`,
+          {
+            method: "POST",
+            body: JSON.stringify(presetKey ? { preset_key: presetKey } : {}),
+            timeout: 180_000,
+          },
+        );
+        captionTrackFromResponse(track);
+        toast(
+          "Captions generated from the narration. Review the text and timing before rendering.",
+          "success",
+        );
+      } finally {
+        captionState().captionBusy = false;
+        captionState().captionStatusOverride = null;
+        await loadCaptionJob(job.id);
+        renderCaptionEditor();
+      }
+    });
+  }
+
+  async function regenerateCaptions(button) {
+    const track = captionTrack();
+    if (!track) return;
+    if (
+      track.edited &&
+      !window.confirm(
+        "Regenerating replaces the manual caption edits for this narration. Continue?",
+      )
+    ) {
+      return;
+    }
+    const presetKey = $("#caption-preset")?.value;
+    const job = productionState().job;
+    await withButton(button, "Regenerating…", async () => {
+      captionState().captionBusy = true;
+      captionState().captionStatusOverride = "generating";
+      renderCaptionEditor();
+      try {
+        const updated = await api(
+          `/captions/tracks/${encodeURIComponent(track.id)}/regenerate`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              force: Boolean(track.edited || track.stale),
+              preset_key: presetKey || track.preset_key,
+            }),
+            timeout: 180_000,
+          },
+        );
+        captionTrackFromResponse(updated);
+        toast("Captions regenerated from the current narration.", "success");
+      } finally {
+        captionState().captionBusy = false;
+        captionState().captionStatusOverride = null;
+        if (job) await loadCaptionJob(job.id);
+        renderCaptionEditor();
+      }
+    });
+  }
+
+  async function applyCaptionStyle(button) {
+    const track = captionTrack();
+    if (!track) return;
+    const settings = collectCaptionSettings();
+    await withButton(button, "Applying…", async () => {
+      captionState().captionBusy = true;
+      try {
+        const updated = await api(
+          `/captions/tracks/${encodeURIComponent(track.id)}/settings`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              preset_key: $("#caption-preset")?.value || track.preset_key,
+              settings,
+            }),
+          },
+        );
+        captionTrackFromResponse(updated);
+        toast("Caption style saved and sidecars regenerated.", "success");
+      } finally {
+        captionState().captionBusy = false;
+        renderCaptionEditor();
+      }
+    });
+  }
+
+  async function saveCaptionCue(button) {
+    const track = captionTrack();
+    const cue = captionSelectedCue();
+    if (!track || !cue) return;
+    const text = ($("#caption-text")?.value || "").trim();
+    const start = Number($("#caption-start")?.value);
+    const end = Number($("#caption-end")?.value);
+    const speaker = ($("#caption-speaker")?.value || "").trim();
+    if (!text) {
+      toast("Cue text cannot be empty.", "warning");
+      return;
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      toast("Cue end must be after its start.", "warning");
+      return;
+    }
+    const cues = captionCues().map((item) => ({ ...item }));
+    const index = captionState().captionCueIndex;
+    cues[index] = {
+      ...cues[index],
+      text,
+      start,
+      end,
+      speaker: speaker || null,
+    };
+    await putCaptionCues(button, cues, "Cue saved.");
+  }
+
+  async function putCaptionCues(button, cues, message) {
+    const track = captionTrack();
+    if (!track) return;
+    await withButton(button, "Saving…", async () => {
+      captionState().captionBusy = true;
+      try {
+        const updated = await api(
+          `/captions/tracks/${encodeURIComponent(track.id)}/cues`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ cues }),
+          },
+        );
+        captionTrackFromResponse(updated, { resetDraft: false });
+        toast(message, "success");
+      } finally {
+        captionState().captionBusy = false;
+        renderCaptionEditor();
+      }
+    });
+  }
+
+  function splitWordsForCue(cue, split, ratio) {
+    const words = Array.isArray(cue.words) ? cue.words : [];
+    if (!words.length) return { first: [], second: [] };
+    const index = Math.min(
+      words.length - 1,
+      Math.max(1, Math.round(words.length * ratio)),
+    );
+    return {
+      first: words.slice(0, index).map((word) => ({
+        ...word,
+        end: Math.min(Number(word.end) || split, split),
+      })),
+      second: words.slice(index).map((word) => ({
+        ...word,
+        start: Math.max(Number(word.start) || split, split),
+      })),
+    };
+  }
+
+  async function splitCaptionCue(button) {
+    const track = captionTrack();
+    const cue = captionSelectedCue();
+    if (!track || !cue) return;
+    const words = String(cue.text || "").split(/\s+/).filter(Boolean);
+    if (words.length < 2) {
+      toast("A cue needs at least two words to split.", "warning");
+      return;
+    }
+    const video = $("#caption-video");
+    let split =
+      video && video.getAttribute("src") && Number.isFinite(video.currentTime)
+        ? video.currentTime
+        : cue.start + (cue.end - cue.start) / 2;
+    if (split <= cue.start + 0.05 || split >= cue.end - 0.05) {
+      split = cue.start + (cue.end - cue.start) / 2;
+    }
+    const ratio = (split - cue.start) / (cue.end - cue.start);
+    const index = Math.min(
+      words.length - 1,
+      Math.max(1, Math.round(words.length * ratio)),
+    );
+    const firstText = words.slice(0, index).join(" ");
+    const secondText = words.slice(index).join(" ");
+    if (!firstText || !secondText) {
+      toast("Move the playhead inside the cue to split it.", "warning");
+      return;
+    }
+    const splitWords = splitWordsForCue(cue, split, ratio);
+    const cues = captionCues().map((item) => ({ ...item }));
+    const position = captionState().captionCueIndex;
+    cues.splice(
+      position,
+      1,
+      {
+        ...cue,
+        text: firstText,
+        end: split,
+        words: splitWords.first,
+      },
+      {
+        ...cue,
+        text: secondText,
+        start: split,
+        words: splitWords.second,
+      },
+    );
+    await putCaptionCues(button, cues, "Cue split.");
+    captionState().captionCueIndex = Math.min(position + 1, cues.length - 1);
+    renderCaptionEditor();
+  }
+
+  async function mergeCaptionCue(button) {
+    const track = captionTrack();
+    const cue = captionSelectedCue();
+    const cues = captionCues();
+    const index = captionState().captionCueIndex;
+    if (!track || !cue || index === null || index >= cues.length - 1) return;
+    const next = cues[index + 1];
+    const merged = {
+      ...cue,
+      text: `${cue.text.trim()} ${next.text.trim()}`.trim(),
+      start: cue.start,
+      end: next.end,
+      words: [...(cue.words || []), ...(next.words || [])],
+      speaker: cue.speaker || next.speaker || null,
+    };
+    const updated = cues.map((item) => ({ ...item }));
+    updated.splice(index, 2, merged);
+    await putCaptionCues(button, updated, "Cues merged.");
+  }
+
+  async function addCaptionCue(button) {
+    const track = captionTrack();
+    if (!track) return;
+    const cues = captionCues().map((item) => ({ ...item }));
+    const duration = captionDurationSeconds();
+    const index = captionState().captionCueIndex;
+    const after = index === null ? null : cues[index];
+    let start = after ? Number(after.end) + 0.02 : 0;
+    let end = start + 2;
+    if (end > duration) {
+      start = Math.max(0, duration - 2);
+      end = duration;
+    }
+    if (end <= start + 0.1) {
+      start = 0;
+      end = Math.max(0.5, Math.min(duration, 2));
+    }
+    const insertAt = index === null ? cues.length : index + 1;
+    cues.splice(insertAt, 0, {
+      index: insertAt + 1,
+      start,
+      end,
+      text: "New caption",
+      words: [],
+      speaker: null,
+    });
+    await putCaptionCues(button, cues, "Cue added.");
+    captionState().captionCueIndex = Math.min(insertAt, cues.length - 1);
+    renderCaptionEditor();
+  }
+
+  async function deleteCaptionCue(button) {
+    const track = captionTrack();
+    const cues = captionCues();
+    const index = captionState().captionCueIndex;
+    if (!track || index === null || !cues[index]) return;
+    if (cues.length <= 1) {
+      toast("A caption track must keep at least one cue.", "warning");
+      return;
+    }
+    if (!window.confirm("Delete this caption cue?")) return;
+    const updated = cues
+      .filter((_, position) => position !== index)
+      .map((item) => ({ ...item }));
+    await putCaptionCues(button, updated, "Cue deleted.");
+    captionState().captionCueIndex = Math.min(index, updated.length - 1);
+    renderCaptionEditor();
+  }
+
+  async function importCaptions(file) {
+    const track = captionTrack();
+    if (!track || !file) return;
+    if (
+      track.edited &&
+      !window.confirm(
+        "Importing a subtitle file replaces the current cues and manual edits. Continue?",
+      )
+    ) {
+      return;
+    }
+    const content = await file.text();
+    const format = file.name.toLowerCase().endsWith(".vtt") ? "vtt" : "srt";
+    captionState().captionBusy = true;
+    renderCaptionEditor();
+    try {
+      const updated = await api(
+        `/captions/tracks/${encodeURIComponent(track.id)}/import`,
+        {
+          method: "POST",
+          body: JSON.stringify({ format, content }),
+        },
+      );
+      captionTrackFromResponse(updated);
+      toast(`Imported ${format.toUpperCase()} captions.`, "success");
+    } catch (error) {
+      toast(describeError(error), "error");
+    } finally {
+      captionState().captionBusy = false;
+      renderCaptionEditor();
+    }
+  }
+
+  async function rerenderWithCaptions(button) {
+    const job = productionState().job;
+    if (!job) return;
+    await withButton(button, "Re-rendering…", async () => {
+      const updated = await api(
+        `/captions/jobs/${encodeURIComponent(job.id)}/rerender`,
+        { method: "POST", timeout: 60_000 },
+      );
+      productionState().job = updated;
+      productionState().selectedJobId = updated.id;
+      renderProductionJob();
+      ensureProductionPolling();
+      toast(
+        "Re-rendering both aspect ratios with the current captions.",
+        "info",
+      );
+      await loadCaptionJob(updated.id);
+    });
+  }
+
+  function wireCaptions() {
+    $("#caption-preset")?.addEventListener("change", () => {
+      const preset = captionPreset($("#caption-preset")?.value);
+      if (!preset?.settings) return;
+      const prod = captionState();
+      prod.captionDraft = cloneCaption(preset.settings);
+      populateCaptionStyle(prod.captionDraft, captionAspect());
+      prod.captionStyleAspect = captionAspect();
+      renderCaptionPreview();
+    });
+
+    $("#caption-aspect")?.addEventListener("change", (event) => {
+      captionState().captionAspect = event.target.value || "16:9";
+      renderCaptionEditor();
+    });
+
+    $("#caption-cues")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-caption-cue]");
+      if (!button) return;
+      selectCaptionCue(Number(button.dataset.captionCue));
+    });
+
+    $("#caption-timeline")?.addEventListener("click", (event) => {
+      const timeline = event.currentTarget;
+      const rect = timeline.getBoundingClientRect();
+      const cues = captionCues();
+      if (!rect.width || !cues.length) return;
+      const ratio = Math.min(
+        1,
+        Math.max(0, (event.clientX - rect.left) / rect.width),
+      );
+      const time = ratio * captionDurationSeconds();
+      let index = cues.findIndex(
+        (cue) => time >= Number(cue.start) && time <= Number(cue.end),
+      );
+      if (index < 0) {
+        index = cues.reduce((best, cue, position) => {
+          const middle = (Number(cue.start) + Number(cue.end)) / 2;
+          const bestMiddle = (Number(cues[best].start) + Number(cues[best].end)) / 2;
+          return Math.abs(middle - time) < Math.abs(bestMiddle - time)
+            ? position
+            : best;
+        }, 0);
+      }
+      selectCaptionCue(index, { time });
+    });
+
+    $("#caption-video")?.addEventListener("timeupdate", () => {
+      updateCaptionPlayhead();
+    });
+    $("#caption-video")?.addEventListener("seeked", () => {
+      updateCaptionPlayhead();
+    });
+
+    $("#caption-generate")?.addEventListener("click", (event) => {
+      generateCaptions(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-regenerate")?.addEventListener("click", (event) => {
+      regenerateCaptions(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-rerender")?.addEventListener("click", (event) => {
+      rerenderWithCaptions(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-apply-style")?.addEventListener("click", (event) => {
+      applyCaptionStyle(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-save-cue")?.addEventListener("click", (event) => {
+      saveCaptionCue(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-split")?.addEventListener("click", (event) => {
+      splitCaptionCue(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-merge-next")?.addEventListener("click", (event) => {
+      mergeCaptionCue(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-add-cue")?.addEventListener("click", (event) => {
+      addCaptionCue(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-delete-cue")?.addEventListener("click", (event) => {
+      deleteCaptionCue(event.currentTarget).catch((error) =>
+        toast(describeError(error), "error"),
+      );
+    });
+    $("#caption-import-file")?.addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      importCaptions(file).catch((error) => toast(describeError(error), "error"));
+    });
+    $("#caption-export-srt")?.addEventListener("click", (event) => {
+      if (!captionTrack()) {
+        event.preventDefault();
+        toast("Generate captions before exporting.", "warning");
+      }
+    });
+    $("#caption-export-vtt")?.addEventListener("click", (event) => {
+      if (!captionTrack()) {
+        event.preventDefault();
+        toast("Generate captions before exporting.", "warning");
+      }
     });
   }
 
@@ -3564,6 +4915,7 @@
     );
     $("#pipeline-button")?.addEventListener("click", advancePipeline);
     wireProduction();
+    wireCaptions();
 
     const queueFilter = $("#queue-filter");
     if (queueFilter) {

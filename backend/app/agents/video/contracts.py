@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from backend.app.media.renderer import RenderResult, SceneClip
+from backend.app.media.renderer import CaptionRender, RenderResult, SceneClip
 
 
 class VideoRenderer(Protocol):
@@ -21,4 +21,5 @@ class VideoRenderer(Protocol):
         height: int,
         transition_seconds: float = 0.4,
         aspect_ratio: str = "16:9",
+        caption_render: CaptionRender | None = None,
     ) -> RenderResult: ...

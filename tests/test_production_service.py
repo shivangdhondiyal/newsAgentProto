@@ -17,7 +17,9 @@ from backend.app.db.models import (
     ResearchBrief,
     ScenePlan,
 )
+from backend.app.media.captions import CaptionCue
 from backend.app.schemas.production import ProductionJobCreate
+from backend.app.services.captions import CaptionService
 from backend.app.services.production import (
     ProductionError,
     ProductionService,
@@ -28,6 +30,7 @@ from backend.app.services.production import (
     save_defaults,
 )
 from backend.app.services.run_control import AgentRunCoordinator
+from tests.support import seed_content
 
 
 async def _seed(tmp_path: Path):
@@ -149,6 +152,7 @@ async def test_create_job_rejects_unknown_style_and_deduplicates(
         "scenes",
         "assets",
         "narrate",
+        "captions",
         "render",
         "verify",
     }
@@ -372,3 +376,137 @@ async def test_retry_requeues_interrupted_stages(tmp_path: Path, monkeypatch) ->
     assert render.status == "queued"
     assert stored.status == "running"
     await engine.dispose()
+
+
+def _service_with_captions(
+    settings: Settings, sessions, caption_service: CaptionService
+) -> ProductionService:
+    return ProductionService(
+        settings,
+        sessions,
+        AgentRunCoordinator(),
+        script_writer_agent=None,
+        scene_planner_agent=None,
+        asset_agent=None,
+        tts_agent=None,
+        video_agent=None,
+        caption_service=caption_service,
+    )
+
+
+@pytest.mark.asyncio
+async def test_caption_stage_generates_from_narration_and_reuses_track(
+    tmp_path: Path,
+) -> None:
+    seeded = await seed_content(tmp_path)
+    settings = Settings(
+        caption_output_dir=tmp_path / "captions",
+        caption_transcription_provider="none",
+    )
+    caption_service = CaptionService(settings, seeded.sessions)
+    service = _service_with_captions(settings, seeded.sessions, caption_service)
+    job = await service.create_job(
+        ProductionJobCreate(script_id=seeded.script_id, captions=True)
+    )
+
+    first = await service._stage_captions(job.id)
+    assert "Generated" in first.message
+    async with seeded.sessions() as session:
+        track = await caption_service.get_for_script(session, seeded.script_id)
+    assert track is not None
+    assert track.status == "ready"
+    assert track.source == "narration_alignment"
+    assert track.cues_json
+    assert Path(track.srt_path).is_file()
+
+    second = await service._stage_captions(job.id)
+    assert "Using existing caption track" in second.message
+    await seeded.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_caption_stage_refuses_to_overwrite_stale_manual_edits(
+    tmp_path: Path,
+) -> None:
+    seeded = await seed_content(tmp_path)
+    settings = Settings(
+        caption_output_dir=tmp_path / "captions",
+        caption_transcription_provider="none",
+    )
+    caption_service = CaptionService(settings, seeded.sessions)
+    service = _service_with_captions(settings, seeded.sessions, caption_service)
+    job = await service.create_job(
+        ProductionJobCreate(script_id=seeded.script_id, captions=True)
+    )
+    await service._stage_captions(job.id)
+
+    async with seeded.sessions() as session:
+        track = await caption_service.get_for_script(session, seeded.script_id)
+        assert track is not None
+        cues = [CaptionCue.from_dict(item) for item in track.cues_json]
+        cues[0].text = "A manually corrected opening line."
+        await caption_service.update_cues(session, track.id, cues)
+        await caption_service.mark_stale_for_narration(
+            session, seeded.narration_id, "Narration changed."
+        )
+
+    with pytest.raises(ProductionError, match="manually edited"):
+        await service._stage_captions(job.id)
+
+    async with seeded.sessions() as session:
+        track = await caption_service.get_for_script(session, seeded.script_id)
+        assert track is not None
+        await caption_service.regenerate(session, track.id, force=True)
+
+    recovered = await service._stage_captions(job.id)
+    assert "Using existing caption track" in recovered.message
+    await seeded.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rerender_requeues_only_render_and_verify(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seeded = await seed_content(tmp_path)
+    settings = Settings(
+        caption_output_dir=tmp_path / "captions",
+        caption_transcription_provider="none",
+    )
+    caption_service = CaptionService(settings, seeded.sessions)
+    service = _service_with_captions(settings, seeded.sessions, caption_service)
+    monkeypatch.setattr(service, "_spawn", lambda job_id: None)
+    job = await service.create_job(
+        ProductionJobCreate(script_id=seeded.script_id, captions=True)
+    )
+    async with seeded.sessions() as session:
+        stages = list(
+            (
+                await session.scalars(
+                    select(ProductionStage).where(ProductionStage.job_id == job.id)
+                )
+            ).all()
+        )
+        for stage in stages:
+            stage.status = "completed"
+        await session.commit()
+
+    updated = await service.rerender_job(job.id)
+
+    async with seeded.sessions() as session:
+        stages = list(
+            (
+                await session.scalars(
+                    select(ProductionStage).where(ProductionStage.job_id == job.id)
+                )
+            ).all()
+        )
+    by_key = {stage.key: stage for stage in stages}
+    assert updated.status == "running"
+    assert by_key["render"].status == "queued"
+    assert by_key["verify"].status == "queued"
+    assert by_key["captions"].status == "completed"
+    assert any(
+        "Re-queued" in entry.get("message", "")
+        for entry in (by_key["render"].logs or [])
+    )
+    await seeded.engine.dispose()

@@ -21,7 +21,15 @@ from backend.app.agents.scene_planner import ScenePlannerAgent
 from backend.app.agents.script_writer import ScriptWriterAgent
 from backend.app.agents.tts import TTSAgent
 from backend.app.agents.video import VideoGeneratorAgent
-from backend.app.api import dashboard, production, publishing, reviews, system, workflow
+from backend.app.api import (
+    captions,
+    dashboard,
+    production,
+    publishing,
+    reviews,
+    system,
+    workflow,
+)
 from backend.app.api.routes import router
 from backend.app.core.config import get_settings
 from backend.app.core.logging import configure_logging
@@ -32,6 +40,7 @@ from backend.app.db.session import (
     reconcile_stale_agent_runs,
 )
 from backend.app.publishers.agent import PublishingAgent
+from backend.app.services.captions import CaptionService
 from backend.app.services.production import (
     ProductionService,
     reconcile_stale_production_jobs,
@@ -112,7 +121,12 @@ async def lifespan(app: FastAPI):
     app.state.scene_planner_agent = ScenePlannerAgent(settings, session_factory)
     app.state.asset_agent = AssetAgent(settings, session_factory)
     app.state.tts_agent = TTSAgent(settings, session_factory)
-    app.state.video_generator_agent = VideoGeneratorAgent(settings, session_factory)
+    app.state.caption_service = CaptionService(settings, session_factory)
+    app.state.video_generator_agent = VideoGeneratorAgent(
+        settings,
+        session_factory,
+        caption_service=app.state.caption_service,
+    )
     app.state.publishing_agent = PublishingAgent(settings, session_factory)
 
     # A process that stopped mid-run cannot execute its finally block. Close those
@@ -138,6 +152,7 @@ async def lifespan(app: FastAPI):
         asset_agent=app.state.asset_agent,
         tts_agent=app.state.tts_agent,
         video_agent=app.state.video_generator_agent,
+        caption_service=app.state.caption_service,
     )
     app.state.workflow_dispatcher = WorkflowDispatcher(coordinator, _build_stages(app))
 
@@ -322,6 +337,7 @@ app.include_router(router)
 app.include_router(workflow.router, prefix="/api/v1")
 app.include_router(reviews.router, prefix="/api/v1")
 app.include_router(production.router, prefix="/api/v1")
+app.include_router(captions.router, prefix="/api/v1")
 app.include_router(publishing.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(dashboard.router)

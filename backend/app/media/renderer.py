@@ -39,6 +39,45 @@ class SceneClip:
     motion_path: str = "linear"
 
 
+@dataclass(frozen=True)
+class CaptionRender:
+    """One aspect's caption plan: burned-in ASS and/or a soft subtitle track.
+
+    The caption service owns cue generation and ASS authoring; the renderer only
+    places the finished files on the FFmpeg timeline. Keeping this small also
+    means a renderer implementation can ignore captions without breaking the
+    scene contract.
+    """
+
+    ass_path: Path | None = None
+    fonts_dir: Path | None = None
+    soft_subtitle_path: Path | None = None
+    burn_in: bool = True
+    soft_subs: bool = True
+    cue_count: int = 0
+    source: str = ""
+
+    @property
+    def burns_in(self) -> bool:
+        return bool(self.burn_in and self.ass_path is not None)
+
+    @property
+    def adds_soft_track(self) -> bool:
+        return bool(self.soft_subs and self.soft_subtitle_path is not None)
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "ass_path": str(self.ass_path) if self.ass_path else None,
+            "soft_subtitle_path": str(self.soft_subtitle_path)
+            if self.soft_subtitle_path
+            else None,
+            "burn_in": self.burns_in,
+            "soft_subs": self.adds_soft_track,
+            "cue_count": self.cue_count,
+            "source": self.source,
+        }
+
+
 @dataclass
 class RenderCheck:
     name: str
@@ -55,6 +94,7 @@ class RenderResult:
     size_bytes: int
     checks: list[RenderCheck] = field(default_factory=list)
     transition_warnings: list[str] = field(default_factory=list)
+    caption: dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -73,6 +113,7 @@ class RenderResult:
                 for check in self.checks
             ],
             "transition_warnings": self.transition_warnings,
+            "caption": self.caption,
         }
 
 
@@ -153,6 +194,7 @@ class FFmpegSceneRenderer:
         height: int,
         transition_seconds: float = 0.4,
         aspect_ratio: str = "16:9",
+        caption_render: CaptionRender | None = None,
     ) -> RenderResult:
         if not clips:
             raise ValueError("At least one scene clip is required")
@@ -168,6 +210,30 @@ class FFmpegSceneRenderer:
                 raise ValueError(
                     f"Scene frame is not a decodable image: {clip.image_path}"
                 ) from exc
+        if caption_render is not None and caption_render.burn_in:
+            ass_path = caption_render.ass_path
+            if ass_path is None:
+                raise FileNotFoundError(
+                    "Caption burn-in was requested without an ASS file. "
+                    "Regenerate captions before rendering."
+                )
+            if not ass_path.is_file():
+                raise FileNotFoundError(
+                    f"Caption subtitle file not found: {ass_path}. "
+                    "Regenerate captions before rendering."
+                )
+        soft_path = subtitle_path
+        if caption_render is not None:
+            soft_path = (
+                caption_render.soft_subtitle_path
+                if caption_render.soft_subs
+                else None
+            )
+            if caption_render.soft_subs and soft_path is not None and not soft_path.is_file():
+                raise FileNotFoundError(
+                    f"Caption sidecar file not found: {soft_path}. "
+                    "Regenerate captions before rendering."
+                )
 
         width = _even(max(64, int(width)))
         height = _even(max(64, int(height)))
@@ -195,9 +261,9 @@ class FFmpegSceneRenderer:
         audio_index = len(clips)
         input_args += ["-i", str(narration_path)]
         subtitle_index: int | None = None
-        if subtitle_path.is_file():
+        if soft_path is not None and soft_path.is_file():
             subtitle_index = len(clips) + 1
-            input_args += ["-i", str(subtitle_path)]
+            input_args += ["-i", str(soft_path)]
 
         filter_parts: list[str] = []
         for index, clip in enumerate(clips):
@@ -228,6 +294,15 @@ class FFmpegSceneRenderer:
                 )
                 current = out_label
             video_label = current
+
+        if caption_render is not None and caption_render.burns_in:
+            assert caption_render.ass_path is not None
+            ass_filter = f"ass=filename='{_filter_path(caption_render.ass_path)}'"
+            fonts_dir = caption_render.fonts_dir
+            if fonts_dir is not None and fonts_dir.is_dir():
+                ass_filter += f":fontsdir='{_filter_path(fonts_dir)}'"
+            filter_parts.append(f"{video_label}{ass_filter}[vcaption]")
+            video_label = "[vcaption]"
 
         filter_parts.append(f"{video_label}format=yuv420p[vout]")
         filter_complex = ";".join(filter_parts)
@@ -302,8 +377,11 @@ class FFmpegSceneRenderer:
             expected_width=width,
             expected_height=height,
             expected_duration=total,
+            expect_subtitle_stream=subtitle_index is not None,
         )
         result.transition_warnings = _transition_warnings(clips)
+        if caption_render is not None:
+            result.caption = caption_render.as_public_dict()
         return result
 
 
@@ -405,6 +483,19 @@ def _even(value: int) -> int:
     return value if value % 2 == 0 else value - 1
 
 
+def _filter_path(path: Path) -> str:
+    """Escape a path for an FFmpeg filter option.
+
+    FFmpeg's filter parser treats ``:`` as an option separator and uses ``'``
+    for quoting, so Windows drive letters and apostrophes must be escaped even
+    though the surrounding path is quoted. Backslashes become forward slashes.
+    """
+
+    value = str(path).replace("\\", "/")
+    value = value.replace("'", r"\'")
+    return value.replace(":", r"\:")
+
+
 async def validate_render(
     ffmpeg: str,
     path: Path,
@@ -412,6 +503,7 @@ async def validate_render(
     expected_width: int,
     expected_height: int,
     expected_duration: float,
+    expect_subtitle_stream: bool = False,
 ) -> RenderResult:
     checks: list[RenderCheck] = []
     size_bytes = path.stat().st_size if path.is_file() else 0
@@ -484,6 +576,19 @@ async def validate_render(
             ),
         )
     )
+    subtitle = next((item for item in streams if item.get("codec_type") == "subtitle"), None)
+    if expect_subtitle_stream:
+        checks.append(
+            RenderCheck(
+                name="subtitle_stream",
+                status="passed" if subtitle is not None else "failed",
+                detail=(
+                    f"Soft subtitle track present ({subtitle.get('codec_name')})."
+                    if subtitle
+                    else "The soft subtitle track was requested but is missing from the file."
+                ),
+            )
+        )
     duration = float(payload.get("format", {}).get("duration") or 0.0)
     if duration:
         drift = abs(duration - expected_duration)

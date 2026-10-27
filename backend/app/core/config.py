@@ -113,6 +113,16 @@ class Settings(BaseSettings):
     video_captions_enabled: bool = True
     video_transition_seconds: float = Field(default=0.4, ge=0.0, le=2.0)
     video_frame_cache_dir: Path = Path("assets/generated/frames")
+    caption_enabled: bool = True
+    caption_output_dir: Path = Path("assets/generated/captions")
+    caption_default_preset: str = "clean_editorial"
+    caption_transcription_provider: str = "auto"
+    caption_whisper_model: str = "base"
+    caption_language: str = "auto"
+    caption_fonts_dir: Path | None = None
+    caption_burn_in_default: bool = True
+    caption_soft_subs_default: bool = True
+    caption_sidecar_default: bool = True
     production_enabled: bool = True
     production_max_retries: int = Field(default=1, ge=0, le=5)
     production_stage_timeout_seconds: int = Field(default=1_800, ge=30, le=14_400)
