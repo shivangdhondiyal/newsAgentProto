@@ -24,12 +24,17 @@ STOP_WORDS = {
     "among",
     "an",
     "and",
+    "allow",
+    "allowed",
+    "allows",
     "any",
     "are",
     "around",
     "as",
     "at",
+    "available",
     "back",
+    "based",
     "be",
     "because",
     "been",
@@ -44,8 +49,10 @@ STOP_WORDS = {
     "called",
     "calls",
     "can",
+    "cited",
     "could",
     "daily",
+    "details",
     "did",
     "do",
     "does",
@@ -107,6 +114,7 @@ STOP_WORDS = {
     "makes",
     "many",
     "may",
+    "meant",
     "might",
     "more",
     "most",
@@ -141,6 +149,7 @@ STOP_WORDS = {
     "rather",
     "really",
     "recent",
+    "reflects",
     "report",
     "reported",
     "right",
@@ -180,6 +189,7 @@ STOP_WORDS = {
     "through",
     "time",
     "to",
+    "told",
     "too",
     "two",
     "under",
@@ -356,9 +366,7 @@ def search_keywords(text: str, limit: int = 5) -> list[str]:
         if lower in STOP_WORDS or lower in seen:
             continue
         first_word = not source[: match.start()].strip()
-        at_sentence_start = (
-            first_word or "\n" in gap or any(char in SENTENCE_END for char in gap)
-        )
+        at_sentence_start = first_word or "\n" in gap or any(char in SENTENCE_END for char in gap)
         if not at_sentence_start and word[0].isupper():
             proper.append(lower)
         else:

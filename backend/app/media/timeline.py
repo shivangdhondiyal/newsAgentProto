@@ -111,9 +111,7 @@ def align_scenes_to_narration(
     # Fill any scenes that could not be matched by splitting the unclaimed
     # timeline proportionally to their narration length.
     missing_indexes = [
-        index
-        for index, timing in enumerate(timings)
-        if timing.end_seconds <= timing.start_seconds
+        index for index, timing in enumerate(timings) if timing.end_seconds <= timing.start_seconds
     ]
     if missing_indexes:
         total_chars = sum(max(1, len(timings[index].narration)) for index in missing_indexes) or 1

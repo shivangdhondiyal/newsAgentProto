@@ -60,9 +60,7 @@ def transcribe(
         raise TranscriptionUnavailable("Speech recognition is disabled in settings.")
     if choice in {"auto", "faster_whisper", "faster-whisper"}:
         if importlib.util.find_spec("faster_whisper") is not None:
-            return _transcribe_faster_whisper(
-                audio_path, model_size=model_size, language=language
-            )
+            return _transcribe_faster_whisper(audio_path, model_size=model_size, language=language)
         if choice != "auto":
             raise TranscriptionUnavailable(
                 "faster-whisper is not installed. Install it or choose the "

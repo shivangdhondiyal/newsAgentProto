@@ -150,8 +150,7 @@ async def test_caption_api_generate_edit_export_import_and_rerender(tmp_path: Pa
         words = edited.json()["cues"][0]["words"]
         assert " ".join(word["text"] for word in words) == "Edited opening caption."
         assert all(
-            edited.json()["cues"][0]["start"] <= word["start"] <= word["end"]
-            for word in words
+            edited.json()["cues"][0]["start"] <= word["start"] <= word["end"] for word in words
         )
         assert words[-1]["end"] <= edited.json()["cues"][0]["end"] + 0.001
 
@@ -180,9 +179,7 @@ async def test_caption_api_generate_edit_export_import_and_rerender(tmp_path: Pa
         vtt = await client.get(f"/api/v1/captions/tracks/{track_id}/export/vtt")
         assert vtt.status_code == 200
         assert vtt.text.startswith("WEBVTT")
-        ass = await client.get(
-            f"/api/v1/captions/tracks/{track_id}/export/ass?aspect=9:16"
-        )
+        ass = await client.get(f"/api/v1/captions/tracks/{track_id}/export/ass?aspect=9:16")
         assert ass.status_code == 200
         assert "PlayResX: 1080" in ass.text
 
@@ -282,9 +279,7 @@ async def test_caption_api_returns_actionable_errors(tmp_path: Path) -> None:
         assert missing.status_code == 404
         assert "not found" in missing.json()["detail"]
 
-        generated = await client.post(
-            f"/api/v1/captions/jobs/{job_id}/generate", json={}
-        )
+        generated = await client.post(f"/api/v1/captions/jobs/{job_id}/generate", json={})
         track_id = generated.json()["id"]
 
         bad_import = await client.post(

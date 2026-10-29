@@ -91,9 +91,7 @@ async def test_workflow_trigger_returns_accepted_conflict_and_unknown_stage() ->
     app.state.workflow_dispatcher = dispatcher
     app.include_router(workflow.router, prefix="/api/v1")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         accepted = await client.post("/api/v1/workflow/runs", json={"stage": "demo"})
         assert accepted.status_code == 202
         payload = accepted.json()
@@ -168,9 +166,7 @@ async def test_overview_uses_real_counts_and_pipeline_stages(tmp_path: Path) -> 
     app.state.run_coordinator = AgentRunCoordinator()
     app.include_router(system.router, prefix="/api/v1")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/v1/system/overview")
         assert response.status_code == 200
         payload = response.json()

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from backend.app.db.models import (
     ProductionJob,
     ProductionStage,
     ResearchBrief,
+    Scene,
     ScenePlan,
 )
 from backend.app.media.captions import CaptionCue
@@ -27,6 +28,7 @@ from backend.app.services.production import (
     list_stories,
     load_defaults,
     reconcile_stale_production_jobs,
+    resolve_render_style,
     save_defaults,
 )
 from backend.app.services.run_control import AgentRunCoordinator
@@ -106,6 +108,10 @@ def test_config_exposes_all_styles_and_licensing(tmp_path: Path) -> None:
     assert config["aspect_options"] == ["both", "16:9", "9:16"]
     assert "never bundled" in config["licensing_note"]
     assert config["defaults"]["style_key"] == settings.video_default_style
+    assert len(config["genres"]) == 16
+    assert config["voices"]
+    assert "target_lufs" in config["audio_defaults"]
+    assert "music_library" in config["audio_defaults"]
 
 
 def test_defaults_round_trip(tmp_path: Path) -> None:
@@ -114,6 +120,51 @@ def test_defaults_round_trip(tmp_path: Path) -> None:
     assert updated["style_key"] == "vox"
     assert updated["aspect_ratio"] == "9:16"
     assert load_defaults(settings)["style_key"] == "vox"
+
+
+def test_render_style_follows_the_genre_unless_the_operator_overrides_it() -> None:
+    # "Genre default" must render with the genre's own style, not the global
+    # default, otherwise the genre never reaches the frame.
+    assert resolve_render_style("genre_default", "map_geopolitical") == "map_geopolitical"
+    assert resolve_render_style("auto", "map_geopolitical") == "map_geopolitical"
+    assert resolve_render_style(None, "map_geopolitical") == "map_geopolitical"
+    assert resolve_render_style("vox", "map_geopolitical") == "vox"
+
+
+@pytest.mark.asyncio
+async def test_create_job_persists_genre_and_presentation_overrides(
+    tmp_path: Path,
+) -> None:
+    engine, sessions, script_id = await _seed(tmp_path)
+    settings = Settings(production_defaults_file=tmp_path / "defaults.json")
+    service = _service(settings, sessions)
+
+    job = await service.create_job(
+        ProductionJobCreate(
+            script_id=script_id,
+            genre_key="business_economy",
+            style_key="genre_default",
+            genre_overrides={
+                "motion_intensity": "restrained",
+                "caption_preset": "kinetic",
+            },
+        )
+    )
+    assert job.genre_key == "business_economy"
+    assert job.style_key == "data"
+    assert job.config_json["genre_overrides"]["motion_intensity"] == "restrained"
+    assert job.genre_profile_json["genre_key"] == "business_economy"
+
+    updated = await service.update_job_settings(
+        job.id,
+        genre_key="sports_news",
+        genre_overrides={"music_enabled": False},
+    )
+    assert updated.genre_key == "sports_news"
+    assert updated.style_key == "broadcast"
+    assert updated.config_json["genre_overrides"]["motion_intensity"] == "restrained"
+    assert updated.config_json["genre_overrides"]["music_enabled"] is False
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -125,9 +176,7 @@ async def test_create_job_rejects_unknown_style_and_deduplicates(
     service = _service(settings, sessions)
 
     with pytest.raises(ProductionError, match="Unknown editing style"):
-        await service.create_job(
-            ProductionJobCreate(script_id=script_id, style_key="not-a-style")
-        )
+        await service.create_job(ProductionJobCreate(script_id=script_id, style_key="not-a-style"))
 
     first = await service.create_job(
         ProductionJobCreate(script_id=script_id, style_key="vox", aspect_ratio="both")
@@ -152,6 +201,7 @@ async def test_create_job_rejects_unknown_style_and_deduplicates(
         "scenes",
         "assets",
         "narrate",
+        "audio",
         "captions",
         "render",
         "verify",
@@ -197,6 +247,7 @@ async def test_reconcile_marks_running_jobs_interrupted(tmp_path: Path) -> None:
     assert stored.status == "interrupted"
     assert stage.status == "interrupted"
     await engine.dispose()
+
 
 class _FakeTTS:
     def __init__(self, wav_path: Path) -> None:
@@ -405,9 +456,7 @@ async def test_caption_stage_generates_from_narration_and_reuses_track(
     )
     caption_service = CaptionService(settings, seeded.sessions)
     service = _service_with_captions(settings, seeded.sessions, caption_service)
-    job = await service.create_job(
-        ProductionJobCreate(script_id=seeded.script_id, captions=True)
-    )
+    job = await service.create_job(ProductionJobCreate(script_id=seeded.script_id, captions=True))
 
     first = await service._stage_captions(job.id)
     assert "Generated" in first.message
@@ -435,9 +484,7 @@ async def test_caption_stage_refuses_to_overwrite_stale_manual_edits(
     )
     caption_service = CaptionService(settings, seeded.sessions)
     service = _service_with_captions(settings, seeded.sessions, caption_service)
-    job = await service.create_job(
-        ProductionJobCreate(script_id=seeded.script_id, captions=True)
-    )
+    job = await service.create_job(ProductionJobCreate(script_id=seeded.script_id, captions=True))
     await service._stage_captions(job.id)
 
     async with seeded.sessions() as session:
@@ -464,9 +511,7 @@ async def test_caption_stage_refuses_to_overwrite_stale_manual_edits(
 
 
 @pytest.mark.asyncio
-async def test_rerender_requeues_only_render_and_verify(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_rerender_requeues_only_render_and_verify(tmp_path: Path, monkeypatch) -> None:
     seeded = await seed_content(tmp_path)
     settings = Settings(
         caption_output_dir=tmp_path / "captions",
@@ -475,9 +520,7 @@ async def test_rerender_requeues_only_render_and_verify(
     caption_service = CaptionService(settings, seeded.sessions)
     service = _service_with_captions(settings, seeded.sessions, caption_service)
     monkeypatch.setattr(service, "_spawn", lambda job_id: None)
-    job = await service.create_job(
-        ProductionJobCreate(script_id=seeded.script_id, captions=True)
-    )
+    job = await service.create_job(ProductionJobCreate(script_id=seeded.script_id, captions=True))
     async with seeded.sessions() as session:
         stages = list(
             (
@@ -505,8 +548,94 @@ async def test_rerender_requeues_only_render_and_verify(
     assert by_key["render"].status == "queued"
     assert by_key["verify"].status == "queued"
     assert by_key["captions"].status == "completed"
-    assert any(
-        "Re-queued" in entry.get("message", "")
-        for entry in (by_key["render"].logs or [])
+    assert any("Re-queued" in entry.get("message", "") for entry in (by_key["render"].logs or []))
+    await seeded.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_graphic_edits_are_scoped_to_one_aspect(tmp_path: Path) -> None:
+    seeded = await seed_content(tmp_path)
+    settings = Settings(production_defaults_file=tmp_path / "defaults.json")
+    service = _service(settings, seeded.sessions)
+    job = await service.create_job(ProductionJobCreate(script_id=seeded.script_id))
+
+    spec = {
+        "id": "g-005-lower_third",
+        "kind": "lower_third",
+        "scene_position": 5,
+        "start_seconds": 1.0,
+        "duration_seconds": 4.0,
+        "text": "Dan Johnson",
+        "secondary_text": "World & Geopolitics",
+        "source": "",
+        "x": 0.06,
+        "y": 0.58,
+        "width": 0.58,
+        "height": 0.15,
+        "enabled": True,
+        "edited": False,
+    }
+    portrait = {**spec, "x": 0.06, "y": 0.52, "width": 0.88, "height": 0.17}
+    async with seeded.sessions() as session:
+        plan = await session.scalar(
+            select(ScenePlan).where(ScenePlan.script_id == seeded.script_id)
+        )
+        session.add(
+            Scene(
+                scene_plan_id=plan.id,
+                position=5,
+                start_seconds=0,
+                duration_seconds=10,
+                narration="BBC's Ukraine correspondent, Dan Johnson, has more details.",
+                subtitle="Dan Johnson has more details.",
+                keywords=[],
+                scene_description="",
+                stock_footage_query="",
+                image_search_query="",
+                animation_suggestion="",
+                editing_plan_json={},
+                graphic_plan_json={
+                    "aspects": {
+                        "16:9": {
+                            "scene_position": 5,
+                            "start_seconds": 0,
+                            "duration_seconds": 10,
+                            "graphics": [spec],
+                            "checks": [],
+                        },
+                        "9:16": {
+                            "scene_position": 5,
+                            "start_seconds": 0,
+                            "duration_seconds": 10,
+                            "graphics": [portrait],
+                            "checks": [],
+                        },
+                    }
+                },
+            )
+        )
+        await session.commit()
+
+    updated = await service.update_graphic(
+        job.id,
+        scene_position=5,
+        aspect_ratio="9:16",
+        graphic_id="g-005-lower_third",
+        changes={"text": "Dan Johnson", "secondary_text": "BBC Ukraine correspondent"},
     )
+    assert updated["secondary_text"] == "BBC Ukraine correspondent"
+    assert updated["edited"] is True
+
+    async with seeded.sessions() as session:
+        scene = await session.scalar(select(Scene).where(Scene.position == 5))
+        aspects = scene.graphic_plan_json["aspects"]
+    landscape = aspects["16:9"]["graphics"][0]
+    portrait_graphic = aspects["9:16"]["graphics"][0]
+    # The portrait edit must not leak into the landscape plan, and the
+    # untouched aspect must stay unedited.
+    assert landscape["secondary_text"] == "World & Geopolitics"
+    assert landscape["edited"] is False
+    assert landscape["y"] == 0.58
+    assert portrait_graphic["secondary_text"] == "BBC Ukraine correspondent"
+    assert portrait_graphic["y"] == 0.52
     await seeded.engine.dispose()

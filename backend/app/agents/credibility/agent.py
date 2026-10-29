@@ -162,9 +162,9 @@ class CredibilityAgent:
             current = strongest_by_publisher.get(identity)
             if current is None or weighted > current[1]:
                 strongest_by_publisher[identity] = (item, weighted)
-        strongest = sorted(
-            strongest_by_publisher.values(), key=lambda item: item[1], reverse=True
-        )[:3]
+        strongest = sorted(strongest_by_publisher.values(), key=lambda item: item[1], reverse=True)[
+            :3
+        ]
         source_count = len(strongest)
         target_weight = self._trust_policy.weight_for(article.source_id)
         evidence_strength = (

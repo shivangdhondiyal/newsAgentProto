@@ -266,9 +266,15 @@
                     <p class="field-hint" id="prod-story-hint"></p>
                   </div>
 
+                  <div class="form-row">
+                    <label for="prod-genre">News genre</label>
+                    <select id="prod-genre"></select>
+                    <p class="field-hint" id="prod-genre-hint"></p>
+                  </div>
+
                   <div class="form-row two">
                     <div class="form-row">
-                      <label for="prod-style">Editing style</label>
+                      <label for="prod-style">Presentation override</label>
                       <select id="prod-style"></select>
                     </div>
                     <div class="form-row">
@@ -295,14 +301,73 @@
                     </div>
                   </div>
 
-                  <div class="form-row">
-                    <label for="prod-voice">Narration voice</label>
-                    <input class="input" id="prod-voice" type="text" readonly />
+                  <div class="form-row two">
+                    <div class="form-row">
+                      <label for="prod-voice">Narration voice</label>
+                      <select id="prod-voice"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="prod-voice-preview">Voice preview</label>
+                      <button class="button small" id="prod-voice-preview" type="button">
+                        Speak a sample
+                      </button>
+                    </div>
                   </div>
+                  <audio id="prod-voice-audio" controls hidden></audio>
 
                   <details class="advanced-options">
-                    <summary>Advanced options</summary>
+                    <summary>Production overrides</summary>
                     <div class="advanced-body">
+                      <div class="form-row two">
+                        <div class="form-row">
+                          <label for="prod-motion">Motion intensity</label>
+                          <select id="prod-motion">
+                            <option value="">Genre default</option>
+                            <option value="restrained">Restrained</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="expressive">Expressive</option>
+                          </select>
+                        </div>
+                        <div class="form-row">
+                          <label for="prod-caption-preset">Caption preset</label>
+                          <select id="prod-caption-preset">
+                            <option value="">Genre default</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <label class="checkbox-row">
+                        <input id="prod-music-enabled" type="checkbox" />
+                        <span>Use a licensed music bed when one is available</span>
+                      </label>
+
+                      <div class="form-row two">
+                        <div class="form-row">
+                          <label for="prod-music-level">Music level</label>
+                          <input
+                            class="input"
+                            id="prod-music-level"
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value="35"
+                          />
+                        </div>
+                        <div class="form-row">
+                          <label for="prod-narration-level">Narration level</label>
+                          <input
+                            class="input"
+                            id="prod-narration-level"
+                            type="range"
+                            min="60"
+                            max="100"
+                            step="1"
+                            value="100"
+                          />
+                        </div>
+                      </div>
+
                       <div class="form-row">
                         <label for="prod-music">Licensed music file (optional)</label>
                         <input
@@ -407,6 +472,33 @@
                     <div class="production-variants" id="prod-variants"></div>
                   </section>
                 </div>
+
+                <div class="production-columns">
+                  <section aria-labelledby="prod-genre-heading">
+                    <h3 id="prod-genre-heading">Genre and presentation</h3>
+                    <div class="production-panel-body" id="prod-genre-summary"></div>
+                  </section>
+                  <section aria-labelledby="prod-audio-heading">
+                    <h3 id="prod-audio-heading">Audio post-production</h3>
+                    <div class="production-panel-body" id="prod-audio"></div>
+                  </section>
+                </div>
+
+                <section aria-labelledby="prod-graphics-heading">
+                  <h3 id="prod-graphics-heading">Motion graphics</h3>
+                  <p class="panel-subtitle">
+                    Edit or disable a planned graphic. Edits are saved and restored on the
+                    next render; automatic planning never overwrites them.
+                  </p>
+                  <div class="form-row compact-row">
+                    <label for="prod-graphic-aspect">Preview aspect</label>
+                    <select class="input compact" id="prod-graphic-aspect">
+                      <option value="16:9">16:9 landscape</option>
+                      <option value="9:16">9:16 vertical</option>
+                    </select>
+                  </div>
+                  <div class="production-graphics" id="prod-graphics"></div>
+                </section>
 
                 <section
                   class="caption-editor"

@@ -957,9 +957,7 @@ def wrap_caption_text(text: str, max_chars: int, max_lines: int) -> list[str]:
     return [*head, tail]
 
 
-def _wrap_word_indices(
-    words: list[CaptionWord], max_chars: int
-) -> list[list[int]]:
+def _wrap_word_indices(words: list[CaptionWord], max_chars: int) -> list[list[int]]:
     lines: list[list[int]] = []
     current: list[int] = []
     length = 0
@@ -1213,9 +1211,7 @@ def validate_cues(
         )
     )
     outside = [
-        cue.index
-        for cue in cues
-        if cue.end > duration + 0.25 or cue.start > duration + 0.25
+        cue.index for cue in cues if cue.end > duration + 0.25 or cue.start > duration + 0.25
     ]
     checks.append(
         CaptionCheck(
@@ -1252,8 +1248,7 @@ def validate_cues(
             "visible_lines",
             "failed" if too_many_lines else "passed",
             (
-                "Cue(s) need more than the allowed visible lines: "
-                + ", ".join(too_many_lines[:8])
+                "Cue(s) need more than the allowed visible lines: " + ", ".join(too_many_lines[:8])
                 if too_many_lines
                 else f"All cues fit within {layout.max_lines} visible line(s)."
             ),
@@ -1525,12 +1520,7 @@ def _inline_color(value: str) -> str:
 
 
 def _ass_escape(value: str) -> str:
-    return (
-        value.replace("\\", r"\\")
-        .replace("{", r"\{")
-        .replace("}", r"\}")
-        .replace("\n", r"\N")
-    )
+    return value.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}").replace("\n", r"\N")
 
 
 def _ass_time(seconds: float) -> str:
@@ -1571,9 +1561,8 @@ def _render_dialogue_text(
             text = _ass_escape(word.text)
             if settings.uppercase:
                 text = _ass_escape(word.text.upper())
-            should_highlight = (
-                (highlight is not None and word_index == highlight)
-                or (settings.emphasis and word.emphasis)
+            should_highlight = (highlight is not None and word_index == highlight) or (
+                settings.emphasis and word.emphasis
             )
             if should_highlight:
                 text = (

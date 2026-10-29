@@ -49,9 +49,7 @@ def evaluate_video_quality(
                 )
             )
         else:
-            checks.append(
-                _check("video_file", "passed", f"Video file present ({size:,} bytes)")
-            )
+            checks.append(_check("video_file", "passed", f"Video file present ({size:,} bytes)"))
 
     subtitle_path = Path(render.subtitle_path)
     if not subtitle_path.is_file() or "-->" not in subtitle_path.read_text(
@@ -94,9 +92,7 @@ def evaluate_video_quality(
     if render.width <= 0 or render.height <= 0:
         checks.append(_check("resolution", "failed", "Video width and height must be positive"))
     elif render.width % 2 or render.height % 2:
-        checks.append(
-            _check("resolution", "failed", "H.264 output requires even width and height")
-        )
+        checks.append(_check("resolution", "failed", "H.264 output requires even width and height"))
     else:
         checks.append(
             _check("resolution", "passed", f"{render.width}x{render.height} at {render.fps} fps")

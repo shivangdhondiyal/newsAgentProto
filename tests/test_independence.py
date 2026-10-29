@@ -77,9 +77,7 @@ async def test_independence_filter_excludes_target_cluster_and_collapses_other_c
     async with sessions() as session:
         target = await _article(session, "bbc-world", "https://bbc.example/target")
         duplicate = await _article(session, "reuters", "https://reuters.example/dup")
-        independent = await _article(
-            session, "associated-press", "https://ap.example/independent"
-        )
+        independent = await _article(session, "associated-press", "https://ap.example/independent")
         other_one = await _article(session, "npr", "https://npr.example/one")
         other_two = await _article(session, "guardian", "https://guardian.example/two")
         await _cluster(session, [target, duplicate])
@@ -93,9 +91,7 @@ async def test_independence_filter_excludes_target_cluster_and_collapses_other_c
             select(Article).where(Article.source_id == "associated-press")
         )
         other_one = await session.scalar(select(Article).where(Article.source_id == "npr"))
-        other_two = await session.scalar(
-            select(Article).where(Article.source_id == "guardian")
-        )
+        other_two = await session.scalar(select(Article).where(Article.source_id == "guardian"))
         filtered = await filter_independent_articles(
             session, target.id, [duplicate, independent, other_one, other_two]
         )
@@ -174,9 +170,7 @@ def test_publisher_identity_groups_separate_feeds_by_publisher() -> None:
     assert world == technology == "trust:bbc-world"
     assert reuters == "trust:reuters"
     assert (
-        publisher_identity(
-            "bbc-world", "BBC News — World", "https://www.bbc.co.uk/news/world-1"
-        )
+        publisher_identity("bbc-world", "BBC News — World", "https://www.bbc.co.uk/news/world-1")
         == "domain:bbc.co.uk"
     )
 

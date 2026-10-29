@@ -15,6 +15,7 @@ from backend.app.media.craft import (
     shot_for_position,
 )
 from backend.app.media.presets import EditingPreset, LayoutRules, Palette
+from backend.app.media.script_text import strip_meta_sentences
 
 FONT_DIRS = (
     Path("C:/Windows/Fonts"),
@@ -36,7 +37,7 @@ FIGURE_RE = re.compile(
     r"km|kilometres|kilometers|miles|people|years|days|hours)?)",
     re.IGNORECASE,
 )
-PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s?%")
+PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s?(?:%|percent\b|per\s+cent\b)", re.IGNORECASE)
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 GEO_TERMS = {
     "border",
@@ -403,6 +404,57 @@ def choose_graphic_type(visual: SceneVisual, preset: EditingPreset) -> str:
     return "typography"
 
 
+_PANEL_TYPES = frozenset({"map", "chart", "timeline", "diagram", "stat", "quote", "split"})
+
+
+def choose_graphic_types(visuals: list[SceneVisual], preset: EditingPreset) -> list[str]:
+    """Choose frame templates for a whole run, not one scene at a time.
+
+    Content decides the first choice, but a geopolitics story can mention a
+    place in every sentence. Without this pass every frame becomes the same
+    locator panel, which reads as a slideshow. A panel template may appear in
+    at most two fifths of the scenes and never twice in a row; repeats fall
+    back to a licensed photo, a panel the scene actually supports, or a clean
+    typography card.
+    """
+
+    chosen = [choose_graphic_type(visual, preset) for visual in visuals]
+    if len(chosen) < 3:
+        return chosen
+    cap = max(1, math.ceil(len(chosen) * 0.4))
+    counts: dict[str, int] = {}
+    previous = ""
+    for index, visual in enumerate(visuals):
+        choice = chosen[index]
+        counts[choice] = counts.get(choice, 0) + 1
+        repeated = choice == previous and choice in _PANEL_TYPES
+        over_cap = choice in _PANEL_TYPES and counts[choice] > cap
+        if repeated or over_cap:
+            alternative = _variety_alternative(visual, preset, counts)
+            if alternative and alternative != choice:
+                counts[choice] -= 1
+                chosen[index] = alternative
+                counts[alternative] = counts.get(alternative, 0) + 1
+                choice = alternative
+        previous = choice
+    return chosen
+
+
+def _variety_alternative(visual: SceneVisual, preset: EditingPreset, counts: dict[str, int]) -> str:
+    if visual.asset_path and visual.asset_path.is_file() and not counts.get("photo"):
+        return "photo"
+    years = extract_years(visual.narration)
+    if "timeline" in preset.graphics and len(years) >= 2:
+        return "timeline"
+    if "chart" in preset.graphics and len(extract_percentages(visual.narration)) >= 2:
+        return "chart"
+    if "stat" in preset.graphics and extract_figures(visual.narration):
+        return "stat"
+    if "diagram" in preset.graphics and preset.key in {"vox", "data", "diagram"}:
+        return "diagram"
+    return "typography"
+
+
 _TRAILING_FUNCTION_WORDS = frozenset(
     {
         "a",
@@ -486,7 +538,16 @@ def _truncate_headline(text: str, limit: int) -> str:
 def _headline_for(
     visual: SceneVisual, preset: EditingPreset, layout: LayoutRules | None = None
 ) -> str:
-    headline = (visual.headline or visual.subtitle or visual.narration or "").strip()
+    # Production boilerplate ("This report is based on ...") belongs in the
+    # credibility panel, never on screen. Prefer the first candidate that still
+    # has story text once those sentences are removed.
+    candidates = (visual.headline, visual.subtitle, visual.narration)
+    headline = ""
+    for candidate in candidates:
+        cleaned = strip_meta_sentences(candidate or "")
+        if cleaned:
+            headline = cleaned
+            break
     headline = " ".join(headline.split())
     limit = (layout or preset.landscape).max_headline_chars
     return _truncate_headline(headline, limit * 2)
@@ -568,18 +629,18 @@ def _draw_source(
     margin: int,
     size: int,
     *,
-    fallback_note: str | None = None,
+    show_credit: bool = True,
 ) -> str:
-    if not preset.show_source:
+    if not preset.show_source or not show_credit:
         return ""
     if visual.attribution:
         text = f"Source: {visual.attribution}"
     elif visual.source_url:
         text = f"Source: {visual.source_url}"
-    elif fallback_note:
-        text = fallback_note
     else:
-        text = "Designed graphic · no external asset used"
+        # No attribution exists, so there is nothing a viewer needs to read.
+        # Internal notes ("no external asset used") belong in the dashboard.
+        return ""
     font = _font(preset.body_font, max(12, size))
     max_width = int(width * 0.52)
     lines = wrap_text(draw, text, font, max_width, max_lines=2)
@@ -1245,21 +1306,23 @@ def render_scene_frame(
     layout: LayoutRules | None = None,
     aspect_ratio: str = "16:9",
     show_caption: bool = True,
+    captions_present: bool = False,
 ) -> FrameResult:
     """Render one deliberate, fully composed frame; never a blank or broken image."""
 
     width = max(64, int(width))
     height = max(64, int(height))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas = _gradient(
-        (width, height), preset.palette.background, preset.palette.surface
-    ).convert("RGBA")
+    canvas = _gradient((width, height), preset.palette.background, preset.palette.surface).convert(
+        "RGBA"
+    )
     draw = ImageDraw.Draw(canvas)
     active_layout = layout or (preset.landscape if width >= height else preset.portrait)
     margin = max(18, int(min(width, height) * active_layout.safe_margin_ratio))
     graphic_type = choose_graphic_type(visual, preset)
     has_asset = bool(visual.asset_path and visual.asset_path.is_file())
     photo_backdrop = False
+    credit_asset = False
 
     if graphic_type == "split":
         _draw_split(canvas, draw, visual, preset, width, height, margin)
@@ -1272,6 +1335,7 @@ def render_scene_frame(
             draw = ImageDraw.Draw(canvas)
         else:
             photo_backdrop = True
+            credit_asset = True
     else:
         if has_asset and graphic_type in {"photo", "typography"}:
             if not _draw_photo_frame(
@@ -1280,6 +1344,7 @@ def render_scene_frame(
                 has_asset = False
             else:
                 photo_backdrop = True
+                credit_asset = True
             draw = ImageDraw.Draw(canvas)
 
     brand_font = _font(preset.body_font, max(10, int(height * 0.016)))
@@ -1333,6 +1398,7 @@ def render_scene_frame(
                     panel_box[3] - margin // 2,
                 )
                 _paste_rounded(canvas, inset, inset_box, 8)
+                credit_asset = True
                 draw = ImageDraw.Draw(canvas)
             except (OSError, ValueError):
                 pass
@@ -1377,10 +1443,11 @@ def render_scene_frame(
         )
 
     if show_caption and not _caption_repeats_headline(visual, preset, active_layout):
-        _draw_caption(
-            draw, visual, preset, width, height, margin, aspect_ratio=aspect_ratio
-        )
-    _draw_lower_third(draw, visual, preset, width, height, margin)
+        _draw_caption(draw, visual, preset, width, height, margin, aspect_ratio=aspect_ratio)
+    # A frame lower third prints the same narration as the caption band, so it
+    # is only used when no captions will appear anywhere in the frame.
+    if not show_caption and not captions_present:
+        _draw_lower_third(draw, visual, preset, width, height, margin)
     _draw_ticker(draw, visual, preset, width, height, margin)
     source_text = _draw_source(
         draw,
@@ -1390,11 +1457,7 @@ def render_scene_frame(
         height,
         margin,
         max(11, int(height * 0.017)),
-        fallback_note=(
-            None
-            if has_asset
-            else "Designed graphic · no external asset"
-        ),
+        show_credit=credit_asset,
     )
     draw.text(
         (width - margin - brand_width, margin),

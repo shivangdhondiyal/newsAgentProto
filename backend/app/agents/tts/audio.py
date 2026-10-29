@@ -110,8 +110,7 @@ def merge_with_pauses(
                 raise ValueError("Only 16-bit PCM WAV output is supported")
             frame_bytes = audio.readframes(metadata.frame_count)
         starts.append(
-            len(merged)
-            / (expected.channels * expected.sample_width * expected.sample_rate)
+            len(merged) / (expected.channels * expected.sample_width * expected.sample_rate)
         )
         merged.extend(frame_bytes)
         pause = max(0, int(pauses_ms[index]))

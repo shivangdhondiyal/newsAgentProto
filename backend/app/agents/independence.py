@@ -165,9 +165,7 @@ async def filter_independent_articles(
         )
     ).all()
 
-    memberships = {
-        article_id: (cluster_id, status) for article_id, cluster_id, status in rows
-    }
+    memberships = {article_id: (cluster_id, status) for article_id, cluster_id, status in rows}
     target_clusters = {
         cluster_id
         for article_id, (cluster_id, status) in memberships.items()

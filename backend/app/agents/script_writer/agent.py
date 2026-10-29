@@ -54,9 +54,7 @@ class ScriptWriterAgent:
                     draft = await self._writer.write(article, assessment, brief)
                     draft = self._fit_to_target(draft, self._settings.script_target_seconds)
                     estimated_duration = self._estimate_duration(self._render(draft))
-                    review_reasons = self._review_reasons(
-                        draft, brief, estimated_duration
-                    )
+                    review_reasons = self._review_reasons(draft, brief, estimated_duration)
                     full_text = self._render(draft)
                     script = NewsScript(
                         article_id=article.id,

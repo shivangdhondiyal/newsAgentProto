@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.core.config import Settings
 from backend.app.db.models import (
     Article,
+    AudioMaster,
     CaptionTrack,
     ContentApproval,
     CredibilityAssessment,
@@ -31,12 +32,30 @@ from backend.app.db.models import (
     VisualAsset,
 )
 from backend.app.media.audio import resolve_executable
+from backend.app.media.audio_production import (
+    build_delivery,
+    list_voices,
+    music_catalog,
+    produce_audio,
+    select_music,
+)
 from backend.app.media.captions import (
     SOURCE_LABELS,
     CaptionCue,
     CaptionSettings,
     list_caption_presets,
     preset_settings,
+)
+from backend.app.media.genres import (
+    AUTO_GENRE,
+    build_effective_profile,
+    genre_summary,
+    list_genres,
+)
+from backend.app.media.motion import (
+    GraphicSpec,
+    graphic_checks,
+    render_graphic_preview,
 )
 from backend.app.media.presets import PRESETS, list_presets
 from backend.app.media.transcription import transcription_status
@@ -51,6 +70,7 @@ STAGE_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("scenes", "Plan scenes"),
     ("assets", "Source visuals"),
     ("narrate", "Narrate"),
+    ("audio", "Post-produce audio"),
     ("captions", "Generate captions"),
     ("render", "Render 16:9 + 9:16"),
     ("verify", "Verify outputs"),
@@ -110,7 +130,8 @@ class ProductionService:
     # ------------------------------------------------------------------ creation
 
     async def create_job(self, payload: ProductionJobCreate) -> ProductionJob:
-        if payload.style_key not in PRESETS:
+        auto_style = payload.style_key in {"", AUTO_GENRE, "genre_default"}
+        if not auto_style and payload.style_key not in PRESETS:
             raise ProductionError(f"Unknown editing style: {payload.style_key}")
         if payload.asset_strategy not in ASSET_STRATEGIES:
             raise ProductionError(f"Unknown asset strategy: {payload.asset_strategy}")
@@ -121,17 +142,27 @@ class ProductionService:
 
         async with self._create_lock:
             async with self._session_factory() as session:
-                script = await self._resolve_script(
-                    session, payload.script_id, payload.article_id
-                )
+                script = await self._resolve_script(session, payload.script_id, payload.article_id)
                 if script is None:
                     raise ProductionError(
                         "No draft script is available for this story. Run the script "
                         "stage first, then start production."
                     )
+                story_text = " ".join(part for part in (script.title, script.full_text) if part)
+                try:
+                    profile = build_effective_profile(
+                        payload.genre_key,
+                        style_key=None if auto_style else payload.style_key,
+                        story_text=story_text,
+                        overrides=payload.genre_overrides,
+                    )
+                except ValueError as exc:
+                    raise ProductionError(str(exc)) from exc
                 fingerprint = _fingerprint(
                     script.id,
-                    payload.style_key,
+                    profile.genre.key,
+                    profile.preset.key,
+                    payload.genre_overrides,
                     payload.aspect_ratio,
                     payload.captions,
                     payload.asset_strategy,
@@ -155,8 +186,7 @@ class ProductionService:
                     .where(
                         ProductionJob.fingerprint == fingerprint,
                         ProductionJob.status.in_(("awaiting_approval", "completed")),
-                        ProductionJob.updated_at
-                        >= datetime.now(UTC) - timedelta(minutes=10),
+                        ProductionJob.updated_at >= datetime.now(UTC) - timedelta(minutes=10),
                     )
                     .order_by(ProductionJob.created_at.desc())
                 )
@@ -166,7 +196,9 @@ class ProductionService:
                     status="queued",
                     article_id=script.article_id,
                     script_id=script.id,
-                    style_key=payload.style_key,
+                    style_key=profile.preset.key,
+                    genre_key=profile.genre.key,
+                    genre_profile_json=profile.to_public_dict(),
                     aspect_ratio=payload.aspect_ratio,
                     fingerprint=fingerprint,
                     requested_by=payload.requested_by,
@@ -177,7 +209,12 @@ class ProductionService:
                         "destination": payload.destination,
                         "music_path": payload.music_path,
                         "aspect_ratio": payload.aspect_ratio,
-                        "style_key": payload.style_key,
+                        "style_key": profile.preset.key,
+                        "requested_style": payload.style_key,
+                        "requested_genre": payload.genre_key,
+                        "genre_key": profile.genre.key,
+                        "genre_overrides": payload.genre_overrides,
+                        "effective_profile": profile.to_public_dict(),
                         "regenerate_narration": payload.regenerate_narration,
                     },
                     logs=[],
@@ -198,6 +235,205 @@ class ProductionService:
                 await session.commit()
                 await session.refresh(job)
                 return job
+
+    async def update_job_settings(
+        self,
+        job_id: str,
+        *,
+        genre_key: str | None = None,
+        genre_overrides: dict[str, Any] | None = None,
+        style_key: str | None = None,
+        audio_overrides: dict[str, Any] | None = None,
+        captions: bool | None = None,
+    ) -> ProductionJob:
+        """Update genre/presentation settings without discarding manual edits.
+
+        Only the requested fields change. Captions, scene plans, and graphic
+        overrides that the operator edited are left untouched, and a running job
+        is never silently reconfigured.
+        """
+
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            if job.status == "running":
+                raise ProductionConflict(
+                    "Stop or finish the current run before changing production settings."
+                )
+            script = await session.get(NewsScript, job.script_id) if job.script_id else None
+            story_text = " ".join(
+                part
+                for part in (script.title if script else "", script.full_text if script else "")
+                if part
+            )
+            config = dict(job.config_json or {})
+            merged_overrides = dict(config.get("genre_overrides") or {})
+            if genre_overrides is not None:
+                merged_overrides = {**merged_overrides, **genre_overrides}
+            next_genre = genre_key or job.genre_key
+            # Keep the operator's original intent ("genre default" vs an
+            # explicit presentation override) instead of treating the resolved
+            # preset as a permanent override.
+            next_style = (
+                style_key if style_key is not None else config.get("requested_style", job.style_key)
+            )
+            try:
+                profile = build_effective_profile(
+                    next_genre,
+                    style_key=next_style,
+                    story_text=story_text,
+                    overrides=merged_overrides,
+                )
+            except ValueError as exc:
+                raise ProductionError(str(exc)) from exc
+            if captions is not None:
+                config["captions"] = captions
+            if audio_overrides is not None:
+                config["audio_overrides"] = {
+                    **(config.get("audio_overrides") or {}),
+                    **audio_overrides,
+                }
+            config["genre_overrides"] = merged_overrides
+            config["genre_key"] = profile.genre.key
+            config["style_key"] = profile.preset.key
+            config["requested_style"] = next_style
+            config["effective_profile"] = profile.to_public_dict()
+            job.genre_key = profile.genre.key
+            job.genre_profile_json = profile.to_public_dict()
+            job.style_key = profile.preset.key
+            job.config_json = config
+            job.fingerprint = _fingerprint(
+                job.script_id,
+                profile.genre.key,
+                profile.preset.key,
+                merged_overrides,
+                job.aspect_ratio,
+                config.get("captions", True),
+                config.get("asset_strategy"),
+                config.get("voice"),
+                config.get("destination"),
+                config.get("music_path"),
+                False,
+            )
+            job.logs = [
+                *(job.logs or []),
+                _log_entry(
+                    "info",
+                    f"Production settings updated: {profile.genre.name} / {profile.preset.name}.",
+                ),
+            ]
+            await session.commit()
+            await session.refresh(job)
+            return job
+
+    async def update_graphic(
+        self,
+        job_id: str,
+        *,
+        scene_position: int,
+        aspect_ratio: str,
+        graphic_id: str,
+        changes: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist an operator's motion-graphics edit for one scene and aspect."""
+
+        if aspect_ratio not in {"16:9", "9:16"}:
+            raise ProductionError(f"Unknown aspect ratio: {aspect_ratio}")
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            scene = await self._scene_for_position(session, job, scene_position)
+            plans = dict((scene.graphic_plan_json or {}).get("aspects") or {})
+            plan = dict(plans.get(aspect_ratio) or {})
+            graphics = [dict(item) for item in plan.get("graphics") or []]
+            target = next(
+                (item for item in graphics if item.get("id") == graphic_id),
+                None,
+            )
+            if target is None:
+                raise ProductionNotFound(
+                    f"Graphic {graphic_id} is not planned for scene {scene_position} "
+                    f"({aspect_ratio})."
+                )
+            for key, value in changes.items():
+                if value is not None:
+                    target[key] = value
+            target["edited"] = True
+            plan["graphics"] = graphics
+            plan["checks"] = graphic_checks(
+                [GraphicSpec.from_dict(item) for item in graphics],
+                aspect_ratio=aspect_ratio,
+                captions_enabled=bool((job.config_json or {}).get("captions", True)),
+                scene_start=float(plan.get("start_seconds") or scene.start_seconds or 0.0),
+                scene_end=float(plan.get("start_seconds") or scene.start_seconds or 0.0)
+                + float(plan.get("duration_seconds") or scene.duration_seconds or 1.0),
+            )
+            plans[aspect_ratio] = plan
+            scene.graphic_plan_json = {**(scene.graphic_plan_json or {}), "aspects": plans}
+            await session.commit()
+            return target
+
+    async def graphic_preview(
+        self,
+        job_id: str,
+        *,
+        scene_position: int,
+        aspect_ratio: str,
+        graphic_id: str,
+        output_path: Path,
+    ) -> Path:
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            scene = await self._scene_for_position(session, job, scene_position)
+            plans = (scene.graphic_plan_json or {}).get("aspects") or {}
+            plan = plans.get(aspect_ratio) or {}
+            payload = next(
+                (item for item in plan.get("graphics") or [] if item.get("id") == graphic_id),
+                None,
+            )
+            if payload is None:
+                raise ProductionNotFound(
+                    f"Graphic {graphic_id} is not planned for scene {scene_position}."
+                )
+            profile = build_effective_profile(
+                job.genre_key,
+                style_key=job.style_key,
+                overrides=(job.config_json or {}).get("genre_overrides") or {},
+            )
+            spec = GraphicSpec.from_dict(payload)
+            return render_graphic_preview(
+                spec,
+                profile.preset,
+                output_path,
+                width=960 if aspect_ratio == "16:9" else 540,
+                height=540 if aspect_ratio == "16:9" else 960,
+            )
+
+    async def _scene_for_position(
+        self, session: AsyncSession, job: ProductionJob, scene_position: int
+    ) -> Scene:
+        plan = (
+            await session.scalar(select(ScenePlan).where(ScenePlan.script_id == job.script_id))
+            if job.script_id
+            else None
+        )
+        scene = (
+            await session.scalar(
+                select(Scene).where(
+                    Scene.scene_plan_id == plan.id,
+                    Scene.position == scene_position,
+                )
+            )
+            if plan is not None
+            else None
+        )
+        if scene is None:
+            raise ProductionNotFound(f"Scene {scene_position} not found for this job")
+        return scene
 
     async def _resolve_script(
         self, session: AsyncSession, script_id: str | None, article_id: str | None
@@ -321,11 +557,7 @@ class ProductionService:
                 ).all()
             )
             failed = next(
-                (
-                    stage
-                    for stage in stages
-                    if stage.status in {"failed", "interrupted"}
-                ),
+                (stage for stage in stages if stage.status in {"failed", "interrupted"}),
                 None,
             )
             if failed is None:
@@ -481,6 +713,8 @@ class ProductionService:
             return await self._stage_assets(job_id)
         if stage_key == "narrate":
             return await self._stage_narrate(job_id)
+        if stage_key == "audio":
+            return await self._stage_audio(job_id)
         if stage_key == "captions":
             return await self._stage_captions(job_id)
         if stage_key == "render":
@@ -557,11 +791,7 @@ class ProductionService:
             if plan is None:
                 raise ProductionError("Scene planning did not produce a plan")
             scenes = list(
-                (
-                    await session.scalars(
-                        select(Scene).where(Scene.scene_plan_id == plan.id)
-                    )
-                ).all()
+                (await session.scalars(select(Scene).where(Scene.scene_plan_id == plan.id))).all()
             )
             if not scenes:
                 raise ProductionError("Scene planning produced no scenes")
@@ -577,9 +807,7 @@ class ProductionService:
                 raise ProductionError("Scene plan is missing")
             scene_ids = list(
                 (
-                    await session.scalars(
-                        select(Scene.id).where(Scene.scene_plan_id == plan.id)
-                    )
+                    await session.scalars(select(Scene.id).where(Scene.scene_plan_id == plan.id))
                 ).all()
             )
             existing = list(
@@ -614,9 +842,7 @@ class ProductionService:
             )
             scene_ids = list(
                 (
-                    await session.scalars(
-                        select(Scene.id).where(Scene.scene_plan_id == plan.id)
-                    )
+                    await session.scalars(select(Scene.id).where(Scene.scene_plan_id == plan.id))
                 ).all()
             )
             rows = list(
@@ -633,10 +859,7 @@ class ProductionService:
                     level=result.level,
                     warnings=(
                         *result.warnings,
-                        (
-                            f"{len(missing)} cached asset file(s) were missing and "
-                            "re-retrieved."
-                        ),
+                        (f"{len(missing)} cached asset file(s) were missing and re-retrieved."),
                     ),
                 )
             return result
@@ -668,9 +891,7 @@ class ProductionService:
                 await session.commit()
             if narration is not None and force:
                 render = await session.scalar(
-                    select(VideoRender).where(
-                        VideoRender.narration_audio_id == narration.id
-                    )
+                    select(VideoRender).where(VideoRender.narration_audio_id == narration.id)
                 )
                 if render is not None:
                     job.warnings = [
@@ -703,6 +924,102 @@ class ProductionService:
                 f"Narrated {narration.duration_seconds:.1f}s at {narration.sample_rate} Hz."
             )
 
+    async def _stage_audio(self, job_id: str) -> StageResult:
+        ffmpeg = resolve_executable(self._settings.video_ffmpeg_executable)
+        if ffmpeg is None:
+            ffmpeg = resolve_executable(self._settings.tts_ffmpeg_executable)
+        if ffmpeg is None:
+            raise ProductionError(
+                "FFmpeg is not available, so the final audio mix cannot be produced. "
+                "Install FFmpeg or set NEWS_VIDEO_FFMPEG_EXECUTABLE."
+            )
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            if job is None:
+                raise ProductionNotFound("Production job not found")
+            narration = await session.scalar(
+                select(NarrationAudio).where(NarrationAudio.script_id == job.script_id)
+            )
+            if narration is None:
+                raise ProductionError("Narration is missing; run the narration stage first.")
+            script = await session.get(NewsScript, job.script_id)
+            config = job.config_json or {}
+            profile = build_effective_profile(
+                job.genre_key,
+                style_key=job.style_key,
+                story_text=" ".join(
+                    part
+                    for part in (script.title if script else "", script.full_text if script else "")
+                    if part
+                ),
+                overrides=config.get("genre_overrides") or {},
+            )
+            operator_music = Path(config["music_path"]) if config.get("music_path") else None
+            music_path, mood, music_reason = select_music(
+                self._settings, profile, operator_path=operator_music
+            )
+            delivery = build_delivery(
+                profile,
+                overrides={
+                    **(config.get("genre_overrides") or {}),
+                    **(config.get("audio_overrides") or {}),
+                },
+                music_path=music_path,
+                music_mood=mood,
+                music_reason=music_reason,
+            )
+            warnings: list[str] = []
+            if profile.music_enabled and music_path is None and music_reason:
+                warnings.append(music_reason)
+            narration_path = Path(narration.wav_path)
+            duration = float(narration.duration_seconds)
+            narration_id = narration.id
+        result = await produce_audio(
+            ffmpeg,
+            narration_path,
+            self._settings.audio_output_dir / (job.script_id or job.id),
+            delivery=delivery,
+            duration_seconds=duration,
+        )
+        warnings.extend(result.warnings)
+        async with self._session_factory() as session:
+            job = await session.get(ProductionJob, job_id)
+            narration = await session.get(NarrationAudio, narration_id)
+            master = await session.scalar(
+                select(AudioMaster).where(AudioMaster.narration_audio_id == narration_id)
+            )
+            if master is None:
+                master = AudioMaster(
+                    narration_audio_id=narration_id,
+                    raw_wav_path=str(narration_path),
+                    mastered_wav_path=str(narration_path),
+                    duration_seconds=duration,
+                    sample_rate=delivery.sample_rate,
+                    channels=delivery.channels,
+                )
+                session.add(master)
+            master.mix_path = str(result.path)
+            master.mix_json = result.to_public_dict()
+            master.music_path = delivery.music_path
+            master.status = "completed" if result.validation.passed else "warning"
+            if narration is not None:
+                narration.delivery_json = result.to_public_dict()
+            job.warnings = [
+                *(job.warnings or []),
+                *[item for item in warnings if item not in (job.warnings or [])],
+            ]
+            await session.commit()
+        music_note = (
+            f" Music bed: {Path(delivery.music_path).name}."
+            if delivery.music_path
+            else " No music bed."
+        )
+        return StageResult(
+            f"Final mix {result.validation.integrated_lufs or 0:.1f} LUFS, "
+            f"{result.validation.true_peak_dbtp or 0:.1f} dBTP.{music_note}",
+            warnings=tuple(warnings),
+        )
+
     async def _stage_captions(self, job_id: str) -> StageResult:
         if self._caption_service is None:
             return StageResult(
@@ -723,12 +1040,20 @@ class ProductionService:
                     "Narration is missing, so captions cannot be aligned to speech. "
                     "Run the narration stage first."
                 )
+            profile = build_effective_profile(
+                job.genre_key,
+                style_key=job.style_key,
+                overrides=(job.config_json or {}).get("genre_overrides") or {},
+            )
             track = await self._caption_service.get_for_narration(session, narration.id)
             if track is not None and track.cues_json and not track.stale:
-                return StageResult(
-                    f"Using existing caption track ({len(track.cues_json)} cue(s), "
-                    f"{track.source})."
-                )
+                # Reuse only when the look still matches the genre/override.
+                # Edited tracks are never regenerated without operator consent.
+                if track.preset_key == profile.caption_preset or track.edited:
+                    return StageResult(
+                        f"Using existing caption track ({len(track.cues_json)} cue(s), "
+                        f"{track.source})."
+                    )
             if track is not None and track.stale and track.edited:
                 raise ProductionError(
                     "The narration changed after these captions were manually edited. "
@@ -737,12 +1062,12 @@ class ProductionService:
                 )
             try:
                 track = await self._caption_service.ensure_for_narration(
-                    session, narration
+                    session,
+                    narration,
+                    preset_key=profile.caption_preset,
                 )
             except ValueError as exc:
-                raise ProductionError(
-                    f"Caption generation failed: {exc}"
-                ) from exc
+                raise ProductionError(f"Caption generation failed: {exc}") from exc
             except Exception as exc:  # noqa: BLE001 - surfaced as an actionable stage error
                 raise ProductionError(
                     "Caption generation failed unexpectedly: "
@@ -764,17 +1089,36 @@ class ProductionService:
             if narration is None:
                 raise ProductionError("Narration is missing")
             aspects = _aspects_for(job.aspect_ratio)
-            music_path = (job.config_json or {}).get("music_path")
-            captions = bool((job.config_json or {}).get("captions", True))
+            config = job.config_json or {}
+            music_path = config.get("music_path")
+            captions = bool(config.get("captions", True))
             narration_id = narration.id
+            master = await session.scalar(
+                select(AudioMaster).where(AudioMaster.narration_audio_id == narration.id)
+            )
+            mixed_audio = (
+                Path(master.mix_path)
+                if master is not None and master.mix_path and Path(master.mix_path).is_file()
+                else None
+            )
+            genre_key = job.genre_key
+            genre_overrides = config.get("genre_overrides") or {}
+            requested_style = config.get("requested_style")
+            # "Genre default" is an instruction to use the genre's own style,
+            # not to fall back to the global default. Passing the resolved style
+            # keeps the genre in charge of presentation.
+            style_key = resolve_render_style(requested_style, job.style_key)
         await self._coordinator.run(
             "video_generator",
             lambda: self._video_agent.execute(
-                style_key=job.style_key,
+                style_key=style_key,
                 aspects=aspects,
                 narration_id=narration_id,
-                music_path=Path(music_path) if music_path else None,
+                music_path=None if mixed_audio else (Path(music_path) if music_path else None),
                 captions=captions,
+                genre_key=genre_key,
+                genre_overrides=genre_overrides,
+                audio_path=mixed_audio,
             ),
             wait_if_busy=True,
             label="Render video",
@@ -816,9 +1160,7 @@ class ProductionService:
             variants = list(
                 (
                     await session.scalars(
-                        select(VideoVariant).where(
-                            VideoVariant.video_render_id == render.id
-                        )
+                        select(VideoVariant).where(VideoVariant.video_render_id == render.id)
                     )
                 ).all()
             )
@@ -827,9 +1169,7 @@ class ProductionService:
                 aspect for aspect in expected if aspect not in {v.aspect_ratio for v in variants}
             ]
             if missing:
-                raise ProductionError(
-                    f"Missing required output variant(s): {', '.join(missing)}"
-                )
+                raise ProductionError(f"Missing required output variant(s): {', '.join(missing)}")
             for variant in variants:
                 failed = [
                     check
@@ -842,9 +1182,7 @@ class ProductionService:
                         + "; ".join(f"{item.get('name')}: {item.get('detail')}" for item in failed)
                     )
                 if not Path(variant.video_path).is_file():
-                    raise ProductionError(
-                        f"{variant.aspect_ratio} output file is missing on disk"
-                    )
+                    raise ProductionError(f"{variant.aspect_ratio} output file is missing on disk")
             captions_enabled = bool((job.config_json or {}).get("captions", True))
             if captions_enabled and self._caption_service is not None:
                 track = await self._caption_service.get_for_script(session, job.script_id)
@@ -868,13 +1206,13 @@ class ProductionService:
                         "The caption SRT sidecar is missing on disk. Re-save the caption "
                         "track, then re-render."
                     )
-                narration = await session.get(
-                    NarrationAudio, track.narration_audio_id
-                ) if track.narration_audio_id else None
+                narration = (
+                    await session.get(NarrationAudio, track.narration_audio_id)
+                    if track.narration_audio_id
+                    else None
+                )
                 if narration is not None:
-                    cues = [
-                        CaptionCue.from_dict(item) for item in (track.cues_json or [])
-                    ]
+                    cues = [CaptionCue.from_dict(item) for item in (track.cues_json or [])]
                     last_end = max((cue.end for cue in cues), default=0.0)
                     drift = abs(last_end - float(narration.duration_seconds or 0.0))
                     if drift > 2.0:
@@ -970,9 +1308,7 @@ async def _caption_payload(
     narration = await session.scalar(
         select(NarrationAudio).where(NarrationAudio.script_id == script.id)
     )
-    track = await session.scalar(
-        select(CaptionTrack).where(CaptionTrack.script_id == script.id)
-    )
+    track = await session.scalar(select(CaptionTrack).where(CaptionTrack.script_id == script.id))
     if track is None:
         return {
             "id": None,
@@ -996,13 +1332,9 @@ async def _caption_payload(
             "vtt_url": None,
             "ass_urls": {},
             "can_generate": narration is not None,
-            "blocking_reason": (
-                None if narration is not None else "Generate the narration first."
-            ),
+            "blocking_reason": (None if narration is not None else "Generate the narration first."),
         }
-    settings = CaptionSettings.from_dict(
-        track.settings_json, preset_settings(track.preset_key)
-    )
+    settings = CaptionSettings.from_dict(track.settings_json, preset_settings(track.preset_key))
     cues = [CaptionCue.from_dict(item) for item in (track.cues_json or [])]
     return {
         "id": track.id,
@@ -1033,9 +1365,7 @@ async def _caption_payload(
     }
 
 
-async def _missing_asset_files(
-    session: AsyncSession, scene_ids: list[str]
-) -> list[SceneAsset]:
+async def _missing_asset_files(session: AsyncSession, scene_ids: list[str]) -> list[SceneAsset]:
     """Ready asset rows whose cached file has disappeared from disk."""
 
     rows = (
@@ -1149,6 +1479,52 @@ async def reconcile_stale_production_jobs(
         return len(jobs)
 
 
+def resolve_render_style(requested_style: str | None, resolved_style: str) -> str:
+    """Turn the operator's style request into the preset the renderer uses.
+
+    "Auto" and "genre default" mean "use whatever the genre resolved to"; only
+    an explicit preset replaces the genre's presentation.
+    """
+
+    if requested_style in (None, "", AUTO_GENRE, "genre_default"):
+        return resolved_style
+    return requested_style
+
+
+def _safe_genre_summary(job: ProductionJob) -> dict[str, Any] | None:
+    """Resolve the job's effective genre without breaking legacy rows."""
+
+    if not job.genre_key:
+        return None
+    config = job.config_json or {}
+    requested_style = config.get("requested_style")
+    try:
+        summary = genre_summary(
+            build_effective_profile(
+                job.genre_key,
+                style_key=requested_style,
+                overrides=config.get("genre_overrides") or {},
+            )
+        )
+    except (ValueError, KeyError):
+        return {
+            "genre_key": job.genre_key,
+            "genre_name": job.genre_key.replace("_", " ").title(),
+            "style_key": job.style_key,
+            "rationale": (
+                "This job was created with a genre that is no longer configured; "
+                "its saved presentation style is preserved."
+            ),
+        }
+    # A job created with Auto keeps the recommendation that actually picked the
+    # genre; re-deriving the profile would otherwise claim the operator chose it.
+    if config.get("requested_genre") == AUTO_GENRE:
+        stored = (job.genre_profile_json or {}).get("rationale")
+        if stored:
+            summary["rationale"] = stored
+    return summary
+
+
 async def build_job_detail(
     session: AsyncSession,
     job: ProductionJob,
@@ -1187,16 +1563,12 @@ async def build_job_detail(
     script = await session.get(NewsScript, job.script_id) if job.script_id else None
     article = await session.get(Article, job.article_id) if job.article_id else None
     if script is not None:
-        plan = await session.scalar(
-            select(ScenePlan).where(ScenePlan.script_id == script.id)
-        )
+        plan = await session.scalar(select(ScenePlan).where(ScenePlan.script_id == script.id))
         if plan is not None:
             scene_rows = list(
                 (
                     await session.scalars(
-                        select(Scene)
-                        .where(Scene.scene_plan_id == plan.id)
-                        .order_by(Scene.position)
+                        select(Scene).where(Scene.scene_plan_id == plan.id).order_by(Scene.position)
                     )
                 ).all()
             )
@@ -1216,19 +1588,15 @@ async def build_job_detail(
                     await session.scalars(
                         select(VisualAsset).where(
                             VisualAsset.id.in_(
-                                [
-                                    row.asset_id
-                                    for row in asset_rows.values()
-                                    if row.asset_id
-                                ]
+                                [row.asset_id for row in asset_rows.values() if row.asset_id]
                             )
                         )
                     )
                 ).all()
             }
-            frame_root = settings.video_output_dir / (
-                render.narration_audio_id if render else ""
-            ) / "frames"
+            frame_root = (
+                settings.video_output_dir / (render.narration_audio_id if render else "") / "frames"
+            )
             timings: dict[int, tuple[float, float]] = {}
             if variants:
                 timeline_path = Path(variants[0].timeline_path)
@@ -1262,6 +1630,20 @@ async def build_job_detail(
                         "transition": scene.transition,
                         "frame_16x9": str(frame_16) if frame_16.is_file() else None,
                         "frame_9x16": str(frame_9) if frame_9.is_file() else None,
+                        "editing_plan": scene.editing_plan_json or {},
+                        "graphic_plan": scene.graphic_plan_json or {},
+                        "graphics": (
+                            (scene.graphic_plan_json or {})
+                            .get("aspects", {})
+                            .get("16:9", {})
+                            .get("graphics", [])
+                        ),
+                        "graphics_by_aspect": {
+                            aspect: (payload or {}).get("graphics", [])
+                            for aspect, payload in (
+                                (scene.graphic_plan_json or {}).get("aspects", {}) or {}
+                            ).items()
+                        },
                         "asset": (
                             {
                                 "scene_position": scene.position,
@@ -1281,25 +1663,59 @@ async def build_job_detail(
                         ),
                     }
                 )
-    variant_payload = [
-        {
-            "id": variant.id,
-            "aspect_ratio": variant.aspect_ratio,
-            "style_key": variant.style_key,
-            "width": variant.width,
-            "height": variant.height,
-            "fps": variant.fps,
-            "video_path": variant.video_path,
-            "subtitle_path": variant.subtitle_path,
-            "timeline_path": variant.timeline_path,
-            "duration_seconds": variant.duration_seconds,
-            "status": variant.status,
-            "checks_json": variant.checks_json or [],
-            "file_url": f"/api/v1/production/jobs/{job.id}/variants/{variant.aspect_ratio}/file",
-        }
-        for variant in variants
-    ]
+    variant_payload = []
+    for variant in variants:
+        video_path = Path(variant.video_path)
+        contact_sheet = video_path.with_name(video_path.stem + "-contact-sheet.jpg")
+        variant_payload.append(
+            {
+                "id": variant.id,
+                "aspect_ratio": variant.aspect_ratio,
+                "style_key": variant.style_key,
+                "width": variant.width,
+                "height": variant.height,
+                "fps": variant.fps,
+                "video_path": variant.video_path,
+                "subtitle_path": variant.subtitle_path,
+                "timeline_path": variant.timeline_path,
+                "duration_seconds": variant.duration_seconds,
+                "status": variant.status,
+                "checks_json": variant.checks_json or [],
+                "contact_sheet_path": str(contact_sheet) if contact_sheet.is_file() else None,
+                "contact_sheet_url": (
+                    f"/api/v1/production/jobs/{job.id}/contact-sheet/{variant.aspect_ratio}"
+                    if contact_sheet.is_file()
+                    else None
+                ),
+                "file_url": (
+                    f"/api/v1/production/jobs/{job.id}/variants/{variant.aspect_ratio}/file"
+                ),
+            }
+        )
     caption_track_payload = await _caption_payload(session, job, script)
+    audio_payload: dict[str, Any] | None = None
+    narration = (
+        await session.scalar(
+            select(NarrationAudio).where(NarrationAudio.script_id == job.script_id)
+        )
+        if job.script_id
+        else None
+    )
+    if narration is not None:
+        master = await session.scalar(
+            select(AudioMaster).where(AudioMaster.narration_audio_id == narration.id)
+        )
+        if master is not None and master.mix_json:
+            audio_payload = dict(master.mix_json)
+            audio_payload["mix_path"] = master.mix_path
+        else:
+            audio_payload = {
+                "path": narration.wav_path,
+                "passed": None,
+                "delivery": narration.delivery_json or {},
+                "checks": [],
+                "warnings": ["Final audio post-production has not run for this job."],
+            }
     return {
         "id": job.id,
         "status": job.status,
@@ -1308,6 +1724,8 @@ async def build_job_detail(
         "article_id": job.article_id,
         "video_render_id": job.video_render_id,
         "style_key": job.style_key,
+        "genre_key": job.genre_key,
+        "genre_profile_json": job.genre_profile_json or {},
         "aspect_ratio": job.aspect_ratio,
         "requested_by": job.requested_by,
         "fingerprint": job.fingerprint,
@@ -1335,6 +1753,8 @@ async def build_job_detail(
         ],
         "variants": variant_payload,
         "caption_track": caption_track_payload,
+        "audio": audio_payload,
+        "genre_summary": _safe_genre_summary(job),
         "scenes": scenes,
         "title": script.title if script else None,
         "article_title": article.title if article else None,
@@ -1342,6 +1762,7 @@ async def build_job_detail(
         "approval_status": approval.status if approval else None,
         "review_url": f"/api/v1/reviews/{job.video_render_id}" if job.video_render_id else None,
     }
+
 
 # --------------------------------------------------------------- dashboard helpers
 
@@ -1368,17 +1789,13 @@ async def list_stories(session: AsyncSession, settings: Settings) -> list[dict[s
     )
     stories: list[dict[str, Any]] = []
     for script, article, credibility, brief in rows:
-        plan = await session.scalar(
-            select(ScenePlan).where(ScenePlan.script_id == script.id)
-        )
+        plan = await session.scalar(select(ScenePlan).where(ScenePlan.script_id == script.id))
         narration = await session.scalar(
             select(NarrationAudio).where(NarrationAudio.script_id == script.id)
         )
         render = (
             await session.scalar(
-                select(VideoRender).where(
-                    VideoRender.narration_audio_id == narration.id
-                )
+                select(VideoRender).where(VideoRender.narration_audio_id == narration.id)
             )
             if narration is not None
             else None
@@ -1387,18 +1804,14 @@ async def list_stories(session: AsyncSession, settings: Settings) -> list[dict[s
         if plan is not None:
             scene_ids = list(
                 (
-                    await session.scalars(
-                        select(Scene.id).where(Scene.scene_plan_id == plan.id)
-                    )
+                    await session.scalars(select(Scene.id).where(Scene.scene_plan_id == plan.id))
                 ).all()
             )
             if scene_ids:
                 assets = list(
                     (
                         await session.scalars(
-                            select(SceneAsset).where(
-                                SceneAsset.scene_id.in_(scene_ids)
-                            )
+                            select(SceneAsset).where(SceneAsset.scene_id.in_(scene_ids))
                         )
                     ).all()
                 )
@@ -1413,9 +1826,7 @@ async def list_stories(session: AsyncSession, settings: Settings) -> list[dict[s
                 "source_name": article.source_name,
                 "status": script.status,
                 "review_reasons": list(script.review_reasons or []),
-                "credibility_score": credibility.confidence_score
-                if credibility
-                else None,
+                "credibility_score": credibility.confidence_score if credibility else None,
                 "credibility_status": credibility.status if credibility else None,
                 "estimated_duration_seconds": script.estimated_duration_seconds,
                 "has_scene_plan": plan is not None,
@@ -1431,9 +1842,7 @@ async def list_stories(session: AsyncSession, settings: Settings) -> list[dict[s
     for story in stories:
         blocking: list[str] = []
         if story["status"] != "draft":
-            blocking.append(
-                f"The script is '{story['status']}' and needs editorial review first."
-            )
+            blocking.append(f"The script is '{story['status']}' and needs editorial review first.")
         if story.pop("_brief_sources", 0) < minimum:
             blocking.append("Insufficient research sources for production.")
         story["production_ready"] = not blocking
@@ -1448,9 +1857,7 @@ def build_config(settings: Settings) -> dict[str, Any]:
     piper = resolve_executable(settings.tts_piper_executable)
     piper_ready = bool(piper and settings.tts_piper_voice_model.is_file())
     providers = [
-        name.strip()
-        for name in settings.asset_provider_priority.split(",")
-        if name.strip()
+        name.strip() for name in settings.asset_provider_priority.split(",") if name.strip()
     ]
     if settings.pexels_api_key:
         providers.append("pexels")
@@ -1495,6 +1902,15 @@ def build_config(settings: Settings) -> dict[str, Any]:
             "transcription_provider": settings.caption_transcription_provider,
         },
         "caption_transcription": transcription_status(),
+        "genres": list_genres(),
+        "voices": list_voices(settings),
+        "audio_defaults": {
+            "target_lufs": settings.audio_target_lufs,
+            "true_peak": settings.audio_true_peak_db,
+            "music_enabled": settings.audio_music_enabled,
+            "ducking": settings.audio_music_ducking,
+            "music_library": music_catalog(settings),
+        },
         "music_dir": str(settings.audio_music_dir),
         "destination_options": list(DESTINATIONS),
         "aspect_options": ["both", "16:9", "9:16"],
@@ -1551,15 +1967,11 @@ def save_defaults(settings: Settings, updates: dict[str, Any]) -> dict[str, Any]
     return current
 
 
-async def list_jobs(
-    session: AsyncSession, limit: int = 20
-) -> list[ProductionJob]:
+async def list_jobs(session: AsyncSession, limit: int = 20) -> list[ProductionJob]:
     return list(
         (
             await session.scalars(
-                select(ProductionJob)
-                .order_by(ProductionJob.created_at.desc())
-                .limit(limit)
+                select(ProductionJob).order_by(ProductionJob.created_at.desc()).limit(limit)
             )
         ).all()
     )

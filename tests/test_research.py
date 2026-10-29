@@ -125,9 +125,7 @@ async def test_local_research_keeps_one_source_per_publisher() -> None:
         )
 
     async with sessions() as session:
-        target = article(
-            "bbc-world", "BBC News — World", "https://www.bbc.com/news/world-quake"
-        )
+        target = article("bbc-world", "BBC News — World", "https://www.bbc.com/news/world-quake")
         session.add_all(
             [
                 target,

@@ -85,9 +85,7 @@ class Settings(BaseSettings):
     asset_min_relevance: float = Field(default=0.35, ge=0.0, le=1.0)
     asset_download_timeout_seconds: float = Field(default=25.0, gt=0, le=120)
     # Wikimedia Commons rejects user agents without a contact URL (HTTP 403).
-    asset_user_agent: str = (
-        "NewsAutomationPlatform/0.2 (self-hosted newsroom; +https://localhost/)"
-    )
+    asset_user_agent: str = "NewsAutomationPlatform/0.2 (self-hosted newsroom; +https://localhost/)"
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
     video_enabled: bool = True

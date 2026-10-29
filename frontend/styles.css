@@ -3509,3 +3509,68 @@ input[type="range"] {
     justify-content: flex-start;
   }
 }
+
+/* Genre, audio, and motion-graphics inspection */
+.production-panel-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem 0 0;
+}
+
+.production-panel-body audio {
+  width: 100%;
+}
+
+.production-note-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.production-graphics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.85rem;
+  padding-top: 0.75rem;
+}
+
+.graphic-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.graphic-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--surface-2, #111);
+}
+
+.graphic-card-body {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem 0.85rem;
+}
+
+.graphic-card-body p {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.compact-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 320px;
+}
+
+.compact-row label {
+  margin: 0;
+  white-space: nowrap;
+}

@@ -76,15 +76,19 @@ async def _load_render(
     session: AsyncSession, video_render_id: str
 ) -> tuple[VideoRender, NarrationAudio, NewsScript, Article, ScenePlan] | None:
     row = (
-        await session.execute(
-            select(VideoRender, NarrationAudio, NewsScript, Article, ScenePlan)
-            .join(NarrationAudio, NarrationAudio.id == VideoRender.narration_audio_id)
-            .join(ScenePlan, ScenePlan.id == VideoRender.scene_plan_id)
-            .join(NewsScript, NewsScript.id == NarrationAudio.script_id)
-            .join(Article, Article.id == NewsScript.article_id)
-            .where(VideoRender.id == video_render_id)
+        (
+            await session.execute(
+                select(VideoRender, NarrationAudio, NewsScript, Article, ScenePlan)
+                .join(NarrationAudio, NarrationAudio.id == VideoRender.narration_audio_id)
+                .join(ScenePlan, ScenePlan.id == VideoRender.scene_plan_id)
+                .join(NewsScript, NewsScript.id == NarrationAudio.script_id)
+                .join(Article, Article.id == NewsScript.article_id)
+                .where(VideoRender.id == video_render_id)
+            )
         )
-    ).tuples().first()
+        .tuples()
+        .first()
+    )
     return row  # type: ignore[return-value]
 
 
@@ -124,9 +128,7 @@ async def list_reviews(
                 .join(ScenePlan, ScenePlan.id == VideoRender.scene_plan_id)
                 .join(NewsScript, NewsScript.id == NarrationAudio.script_id)
                 .join(Article, Article.id == NewsScript.article_id)
-                .outerjoin(
-                    CredibilityAssessment, CredibilityAssessment.article_id == Article.id
-                )
+                .outerjoin(CredibilityAssessment, CredibilityAssessment.article_id == Article.id)
                 .order_by(VideoRender.created_at.desc())
                 .limit(500)
             )

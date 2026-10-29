@@ -49,14 +49,18 @@ async def queue_publish(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PublishingRecord:
     row = (
-        await session.execute(
-            select(VideoRender, NarrationAudio, NewsScript, Article)
-            .join(NarrationAudio, NarrationAudio.id == VideoRender.narration_audio_id)
-            .join(NewsScript, NewsScript.id == NarrationAudio.script_id)
-            .join(Article, Article.id == NewsScript.article_id)
-            .where(VideoRender.id == payload.video_render_id)
+        (
+            await session.execute(
+                select(VideoRender, NarrationAudio, NewsScript, Article)
+                .join(NarrationAudio, NarrationAudio.id == VideoRender.narration_audio_id)
+                .join(NewsScript, NewsScript.id == NarrationAudio.script_id)
+                .join(Article, Article.id == NewsScript.article_id)
+                .where(VideoRender.id == payload.video_render_id)
+            )
         )
-    ).tuples().first()
+        .tuples()
+        .first()
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="Video render not found")
     render, _narration, script, article = row
@@ -206,9 +210,7 @@ async def publishing_analytics(
         pending_reviews=approval_counts.get("pending", 0),
         publishing_success_rate=success_rate,
         external_publish_count=sum(
-            1
-            for record in recent
-            if record.status == "published" and record.platform != "local"
+            1 for record in recent if record.status == "published" and record.platform != "local"
         ),
         recent_records=[PublishingRecordRead.model_validate(record) for record in recent[:10]],
     )

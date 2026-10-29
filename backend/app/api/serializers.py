@@ -204,12 +204,7 @@ def priority_score(
     age_hours = max(0.0, (current - reference).total_seconds() / 3_600)
     recency = max(0.0, 1.0 - age_hours / (24 * 7))
     review_bonus = 1.0 if approval_status == "pending" else 0.5
-    score = (
-        45 * (credibility_score or 0.0)
-        + 25 * trust_weight
-        + 15 * recency
-        + 15 * review_bonus
-    )
+    score = 45 * (credibility_score or 0.0) + 25 * trust_weight + 15 * recency + 15 * review_bonus
     return round(min(100.0, max(0.0, score)), 1)
 
 

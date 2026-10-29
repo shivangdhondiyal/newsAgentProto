@@ -274,6 +274,8 @@ class Scene(Base):
     image_search_query: Mapped[str] = mapped_column(Text)
     animation_suggestion: Mapped[str] = mapped_column(Text)
     transition: Mapped[str] = mapped_column(String(80), default="crossfade")
+    editing_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    graphic_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -296,6 +298,7 @@ class NarrationAudio(Base):
     mp3_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_seconds: Mapped[float] = mapped_column(Float)
     sample_rate: Mapped[int] = mapped_column(Integer)
+    delivery_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -365,6 +368,7 @@ class CaptionTrack(Base):
 
 class VideoRender(Base):
     """A draft local video render awaiting manual approval before any publishing action."""
+
     __tablename__ = "video_renders"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -508,9 +512,7 @@ class SceneAsset(Base):
     __table_args__ = (UniqueConstraint("scene_id", "role", name="uq_scene_asset_role"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    scene_id: Mapped[str] = mapped_column(
-        ForeignKey("scenes.id", ondelete="CASCADE"), index=True
-    )
+    scene_id: Mapped[str] = mapped_column(ForeignKey("scenes.id", ondelete="CASCADE"), index=True)
     asset_id: Mapped[str | None] = mapped_column(
         ForeignKey("visual_assets.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -525,9 +527,7 @@ class AudioMaster(Base):
     """Mastered narration audio and the validation evidence for it."""
 
     __tablename__ = "audio_masters"
-    __table_args__ = (
-        UniqueConstraint("narration_audio_id", name="uq_audio_master_narration"),
-    )
+    __table_args__ = (UniqueConstraint("narration_audio_id", name="uq_audio_master_narration"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     narration_audio_id: Mapped[str] = mapped_column(
@@ -536,6 +536,8 @@ class AudioMaster(Base):
     raw_wav_path: Mapped[str] = mapped_column(Text)
     mastered_wav_path: Mapped[str] = mapped_column(Text)
     music_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mix_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mix_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
     duration_seconds: Mapped[float] = mapped_column(Float)
     sample_rate: Mapped[int] = mapped_column(Integer)
@@ -590,6 +592,8 @@ class ProductionJob(Base):
     script_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     video_render_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     style_key: Mapped[str] = mapped_column(String(60), default="broadcast")
+    genre_key: Mapped[str] = mapped_column(String(60), default="general_news")
+    genre_profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     aspect_ratio: Mapped[str] = mapped_column(String(10), default="both")
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     requested_by: Mapped[str] = mapped_column(String(120), default="operator")
@@ -609,9 +613,7 @@ class ProductionStage(Base):
     """One persisted stage of a production job, including retries and logs."""
 
     __tablename__ = "production_stages"
-    __table_args__ = (
-        UniqueConstraint("job_id", "key", name="uq_production_stage_job_key"),
-    )
+    __table_args__ = (UniqueConstraint("job_id", "key", name="uq_production_stage_job_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     job_id: Mapped[str] = mapped_column(
@@ -630,4 +632,3 @@ class ProductionStage(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-

@@ -82,15 +82,9 @@ async def _count(session: AsyncSession, statement) -> int:
 
 async def _journal(session: AsyncSession) -> dict[str, int]:
     return {
-        "articles": await _count(
-            session, select(func.count()).select_from(Article)
-        ),
-        "scripts": await _count(
-            session, select(func.count()).select_from(NewsScript)
-        ),
-        "video_renders": await _count(
-            session, select(func.count()).select_from(VideoRender)
-        ),
+        "articles": await _count(session, select(func.count()).select_from(Article)),
+        "scripts": await _count(session, select(func.count()).select_from(NewsScript)),
+        "video_renders": await _count(session, select(func.count()).select_from(VideoRender)),
         "pending_approvals": await _count(
             session,
             select(func.count())
@@ -153,37 +147,25 @@ async def system_overview(
         select(ArticleEmbedding.id).where(ArticleEmbedding.article_id == Article.id)
     )
     article_without_assessment = ~exists(
-        select(CredibilityAssessment.id).where(
-            CredibilityAssessment.article_id == Article.id
-        )
+        select(CredibilityAssessment.id).where(CredibilityAssessment.article_id == Article.id)
     )
     assessed_without_brief = ~exists(
-        select(ResearchBrief.id).where(
-            ResearchBrief.article_id == CredibilityAssessment.article_id
-        )
+        select(ResearchBrief.id).where(ResearchBrief.article_id == CredibilityAssessment.article_id)
     )
     assessed_without_script = ~exists(
-        select(NewsScript.id).where(
-            NewsScript.article_id == CredibilityAssessment.article_id
-        )
+        select(NewsScript.id).where(NewsScript.article_id == CredibilityAssessment.article_id)
     )
-    script_without_plan = ~exists(
-        select(ScenePlan.id).where(ScenePlan.script_id == NewsScript.id)
-    )
+    script_without_plan = ~exists(select(ScenePlan.id).where(ScenePlan.script_id == NewsScript.id))
     plan_without_narration = ~exists(
         select(NarrationAudio.id).where(NarrationAudio.script_id == NewsScript.id)
     )
     narration_without_render = ~exists(
-        select(VideoRender.id).where(
-            VideoRender.narration_audio_id == NarrationAudio.id
-        )
+        select(VideoRender.id).where(VideoRender.narration_audio_id == NarrationAudio.id)
     )
 
     collected_24h = await _count(
         session,
-        select(func.count())
-        .select_from(Article)
-        .where(Article.collected_at >= cutoff),
+        select(func.count()).select_from(Article).where(Article.collected_at >= cutoff),
     )
     awaiting_dedup = await _count(
         session,
@@ -297,15 +279,11 @@ async def system_overview(
     )
     draft_renders = await _count(
         session,
-        select(func.count())
-        .select_from(VideoRender)
-        .where(VideoRender.status == "draft"),
+        select(func.count()).select_from(VideoRender).where(VideoRender.status == "draft"),
     )
     active_runs = await _count(
         session,
-        select(func.count())
-        .select_from(AgentRun)
-        .where(AgentRun.status == "running"),
+        select(func.count()).select_from(AgentRun).where(AgentRun.status == "running"),
     )
     last_sync = await session.scalar(
         select(func.max(AgentRun.finished_at)).where(
@@ -316,16 +294,12 @@ async def system_overview(
 
     recent_runs = list(
         (
-            await session.scalars(
-                select(AgentRun).order_by(AgentRun.started_at.desc()).limit(8)
-            )
+            await session.scalars(select(AgentRun).order_by(AgentRun.started_at.desc()).limit(8))
         ).all()
     )
     last_by_agent: dict[str, AgentRun] = {}
     for run in (
-        await session.scalars(
-            select(AgentRun).order_by(AgentRun.started_at.desc()).limit(200)
-        )
+        await session.scalars(select(AgentRun).order_by(AgentRun.started_at.desc()).limit(200))
     ).all():
         last_by_agent.setdefault(run.agent_name, run)
 
@@ -356,9 +330,7 @@ async def system_overview(
     pipeline: list[PipelineStageRead] = []
     for spec in STAGE_SPECS:
         last_run = last_by_agent.get(spec.agent_name)
-        is_running = bool(
-            coordinator is not None and coordinator.is_running(spec.agent_name)
-        )
+        is_running = bool(coordinator is not None and coordinator.is_running(spec.agent_name))
         if is_running or (last_run is not None and last_run.status == "running"):
             status = "running" if is_running else "stalled"
             status_label = "Running" if is_running else "Interrupted"
@@ -511,8 +483,7 @@ async def system_overview(
             label="Active renders",
             value=active_render_jobs,
             detail=(
-                f"{draft_renders} draft render"
-                f"{'s' if draft_renders != 1 else ''} awaiting review"
+                f"{draft_renders} draft render{'s' if draft_renders != 1 else ''} awaiting review"
                 if draft_renders
                 else "No draft renders awaiting review"
             ),

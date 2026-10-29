@@ -64,9 +64,8 @@ class WorkflowDispatcher:
         stage = self._stages.get(stage_key)
         if stage is None:
             raise WorkflowStageNotFound(stage_key)
-        if (
-            stage.agent_name in self._pending_agents
-            or self._coordinator.is_running(stage.agent_name)
+        if stage.agent_name in self._pending_agents or self._coordinator.is_running(
+            stage.agent_name
         ):
             raise RunInProgressError(stage.agent_name, stage.label)
 
@@ -88,9 +87,7 @@ class WorkflowDispatcher:
             label=stage.label,
             agent_name=stage.agent_name,
             accepted_at=accepted_at,
-            poll_path=(
-                f"/api/v1/agent-runs?agent_name={stage.agent_name}&limit=1"
-            ),
+            poll_path=(f"/api/v1/agent-runs?agent_name={stage.agent_name}&limit=1"),
         )
 
     async def _execute(self, stage: WorkflowStage) -> None:

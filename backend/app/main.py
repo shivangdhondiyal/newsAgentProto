@@ -137,9 +137,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Reconciled %s interrupted agent run(s)", interrupted)
     interrupted_jobs = await reconcile_stale_production_jobs(session_factory)
     if interrupted_jobs:
-        logger.warning(
-            "Reconciled %s interrupted production job(s)", interrupted_jobs
-        )
+        logger.warning("Reconciled %s interrupted production job(s)", interrupted_jobs)
 
     coordinator = AgentRunCoordinator()
     app.state.run_coordinator = coordinator

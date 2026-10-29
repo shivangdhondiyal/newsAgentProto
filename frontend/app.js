@@ -151,6 +151,9 @@
       selectedJobId: null,
       pollTimer: null,
       loading: false,
+      genreAuto: null,
+      genreOverrides: {},
+      graphicAspect: "16:9",
       captionConfig: null,
       caption: null,
       captionCueIndex: null,
@@ -2741,6 +2744,77 @@
     );
   }
 
+  function selectedGenre() {
+    const key = $("#prod-genre")?.value;
+    return (productionState().config?.genres || []).find(
+      (genre) => genre.key === key,
+    );
+  }
+
+  function genreOverridesFromForm() {
+    const overrides = {};
+    const motion = $("#prod-motion")?.value;
+    if (motion) overrides.motion_intensity = motion;
+    const captionPreset = $("#prod-caption-preset")?.value;
+    if (captionPreset) overrides.caption_preset = captionPreset;
+    const musicEnabled = $("#prod-music-enabled");
+    if (musicEnabled) {
+      overrides.music_enabled = Boolean(musicEnabled.checked);
+      // Only override mix levels when the operator actually asked for a music
+      // bed; otherwise the genre's own level should apply.
+      if (musicEnabled.checked) {
+        const musicLevel = $("#prod-music-level");
+        if (musicLevel) overrides.music_level = Number(musicLevel.value) / 100;
+        const narrationLevel = $("#prod-narration-level");
+        if (narrationLevel) {
+          overrides.narration_level = Number(narrationLevel.value) / 100;
+        }
+      }
+    }
+    return overrides;
+  }
+
+  function renderGenreHint() {
+    const hint = $("#prod-genre-hint");
+    if (!hint) return;
+    const prod = productionState();
+    const key = $("#prod-genre")?.value;
+    if (key === "auto") {
+      const auto = prod.genreAuto;
+      hint.textContent = auto
+        ? `${auto.rationale}`
+        : "Auto chooses a profile from the story text and shows its reasoning.";
+      hint.dataset.tone = "info";
+      return;
+    }
+    const genre = selectedGenre();
+    if (!genre) {
+      hint.textContent = "";
+      return;
+    }
+    hint.dataset.tone = "";
+    hint.textContent = `${genre.description} Default approach: ${genre.default_approach}`;
+  }
+
+  async function loadGenreRecommendation() {
+    const prod = productionState();
+    const scriptId = $("#prod-story")?.value;
+    if (!scriptId) return;
+    try {
+      const payload = await api(
+        `/production/genres?script_id=${encodeURIComponent(scriptId)}`,
+      );
+      prod.genreAuto = payload.auto || null;
+      if (payload.genres?.length && prod.config && !prod.config.genres?.length) {
+        prod.config.genres = payload.genres;
+        renderProductionConfig();
+      }
+      renderGenreHint();
+    } catch {
+      renderGenreHint();
+    }
+  }
+
   function renderProductionStyleSummary() {
     const summary = $("#prod-style-summary");
     const style = selectedStyle();
@@ -2776,12 +2850,46 @@
     const config = productionState().config;
     if (!config) return;
     const prod = productionState();
+    const genreSelect = $("#prod-genre");
+    if (genreSelect && !genreSelect.options.length) {
+      genreSelect.innerHTML = [
+        `<option value="auto">Auto — recommended from the story</option>`,
+        ...(config.genres || []).map(
+          (genre) =>
+            `<option value="${esc(genre.key)}">${esc(genre.name)}</option>`,
+        ),
+      ].join("");
+    }
     const styleSelect = $("#prod-style");
     if (styleSelect && !styleSelect.options.length) {
-      styleSelect.innerHTML = config.styles
-        .map(
+      styleSelect.innerHTML = [
+        `<option value="">Genre default</option>`,
+        ...config.styles.map(
           (style) =>
             `<option value="${esc(style.key)}">${esc(style.name)}</option>`,
+        ),
+      ].join("");
+    }
+    const voiceSelect = $("#prod-voice");
+    if (voiceSelect && !voiceSelect.options.length) {
+      const voices = config.voices || [];
+      voiceSelect.innerHTML = voices.length
+        ? voices
+            .map(
+              (voice) =>
+                `<option value="${esc(voice.key)}" ${
+                  voice.available ? "" : "disabled"
+                }>${esc(voice.name)}${voice.available ? "" : " (missing)"}</option>`,
+            )
+            .join("")
+        : `<option value="">No local voice installed</option>`;
+    }
+    const captionPresetSelect = $("#prod-caption-preset");
+    if (captionPresetSelect && captionPresetSelect.options.length <= 1) {
+      captionPresetSelect.innerHTML += (config.caption_presets || [])
+        .map(
+          (preset) =>
+            `<option value="${esc(preset.key)}">${esc(preset.name)}</option>`,
         )
         .join("");
     }
@@ -2794,7 +2902,11 @@
     }
     if (!prod.defaultsApplied) {
       const defaults = config.defaults || {};
-      if (styleSelect && defaults.style_key) styleSelect.value = defaults.style_key;
+      const genreSelectDefault = $("#prod-genre");
+      if (genreSelectDefault) genreSelectDefault.value = "auto";
+      // "Genre default" is the intended default presentation; the genre
+      // profile supplies the actual preset. Keep the sentinel empty value.
+      if (styleSelect) styleSelect.value = "";
       const aspect = $("#prod-aspect");
       if (aspect && defaults.aspect_ratio) aspect.value = defaults.aspect_ratio;
       const captions = $("#prod-captions");
@@ -2816,6 +2928,7 @@
     }
     renderProductionReadiness();
     renderProductionStyleSummary();
+    renderGenreHint();
   }
 
   function renderProductionReadiness() {
@@ -2911,6 +3024,7 @@
       select.value = previous;
     }
     renderProductionStoryHint();
+    loadGenreRecommendation();
   }
 
   function renderProductionStoryHint() {
@@ -3024,6 +3138,13 @@
         <a class="button ghost small" href="${esc(
           variant.file_url,
         )}" download>Download MP4</a>
+        ${
+          variant.contact_sheet_url
+            ? `<a class="button ghost small" href="${esc(
+                variant.contact_sheet_url,
+              )}" target="_blank" rel="noopener">Contact sheet</a>`
+            : ""
+        }
         ${badge(variant.status)}
       </div>
     </article>`;
@@ -3056,6 +3177,127 @@
       <div class="scene-frames">${frames}</div>
       <div class="scene-license">${assetMarkup(scene.asset)}</div>
     </article>`;
+  }
+
+  function renderProductionGenreSummary() {
+    const node = $("#prod-genre-summary");
+    if (!node) return;
+    const job = productionState().job;
+    const summary = job?.genre_summary;
+    if (!summary) {
+      node.innerHTML = `<p class="muted">The genre profile appears after the job is created.</p>`;
+      return;
+    }
+    node.innerHTML = `
+      <div class="style-summary-head">
+        <strong>${esc(summary.genre_name || summary.genre_key)}</strong>
+        <span class="muted">${esc(summary.style_name || summary.style_key)}</span>
+      </div>
+      <p class="style-summary-copy">${esc(summary.description || summary.rationale || "")}</p>
+      <p class="field-hint">${esc(summary.rationale || "")}</p>
+      <div class="chips">
+        <span class="chip">${esc(summary.caption_preset || "captions")}</span>
+        <span class="chip">motion ${Number(summary.motion_intensity ?? 0).toFixed(2)}</span>
+        <span class="chip">${summary.music_enabled ? "music bed" : "no music"}</span>
+        <span class="chip">${esc(summary.sensitivity || "standard")}</span>
+        ${summary.style_overridden ? `<span class="chip">style override</span>` : ""}
+      </div>`;
+  }
+
+  function renderProductionAudio() {
+    const node = $("#prod-audio");
+    if (!node) return;
+    const job = productionState().job;
+    const audio = job?.audio;
+    if (!audio) {
+      node.innerHTML = `<p class="muted">Audio post-production runs after narration.</p>`;
+      return;
+    }
+    const delivery = audio.delivery || {};
+    const music = delivery.music || {};
+    const checks = audio.checks || [];
+    const failed = checks.filter((check) => check.status === "failed").length;
+    const warnings = checks.filter((check) => check.status === "warning").length;
+    node.innerHTML = `
+      <div class="style-summary-head">
+        <strong>${audio.passed === true ? "Final mix validated" : audio.passed === false ? "Final mix needs review" : "Final mix not validated"}</strong>
+        <span class="muted">${audio.integrated_lufs != null ? `${Number(audio.integrated_lufs).toFixed(1)} LUFS` : "—"} · ${audio.true_peak_dbtp != null ? `${Number(audio.true_peak_dbtp).toFixed(1)} dBTP` : "—"}</span>
+      </div>
+      <div class="chips">
+        <span class="chip">${music.enabled ? "music bed" : "narration only"}</span>
+        <span class="chip">music ${Number(music.level ?? 0).toFixed(2)}</span>
+        <span class="chip">narration ${Number(delivery.narration_level ?? 1).toFixed(2)}</span>
+        <span class="chip">${music.ducking ? "ducked" : "no ducking"}</span>
+        <span class="chip">${failed} failed · ${warnings} warnings</span>
+      </div>
+      ${
+        audio.mix_path
+          ? `<audio controls preload="none" src="${API}/production/jobs/${encodeURIComponent(job.id)}/audio/mix"></audio>`
+          : ""
+      }
+      ${
+        (audio.warnings || []).length
+          ? `<ul class="production-note-list">${audio.warnings
+              .map((item) => `<li>${esc(item)}</li>`)
+              .join("")}</ul>`
+          : ""
+      }`;
+  }
+
+  function renderProductionGraphics() {
+    const node = $("#prod-graphics");
+    if (!node) return;
+    const prod = productionState();
+    const job = prod.job;
+    const aspect = prod.graphicAspect || "16:9";
+    const scenes = (job?.scenes || [])
+      .map((scene) => ({
+        ...scene,
+        graphics: (scene.graphics_by_aspect?.[aspect] ?? scene.graphics ?? []),
+      }))
+      .filter((scene) => (scene.graphics || []).length);
+    if (!scenes.length) {
+      node.innerHTML = `<p class="muted">No motion graphics are planned yet. The planner only adds a graphic when the narration supports one.</p>`;
+      return;
+    }
+    node.innerHTML = scenes
+      .map((scene) =>
+        (scene.graphics || [])
+          .map((graphic) => {
+            const preview = `${API}/production/jobs/${encodeURIComponent(
+              job.id,
+            )}/scenes/${scene.position}/graphics/${encodeURIComponent(
+              prod.graphicAspect,
+            )}/${encodeURIComponent(graphic.id)}/preview`;
+            return `<article class="graphic-card" data-graphic-card>
+              <img src="${esc(preview)}" alt="Preview of ${esc(
+                graphic.kind,
+              )} graphic for scene ${scene.position}" loading="lazy" />
+              <div class="graphic-card-body">
+                <div class="style-summary-head">
+                  <strong>${esc(graphic.kind)}</strong>
+                  <span class="muted">scene ${scene.position} · ${fmtDuration(
+                    graphic.duration_seconds,
+                  )}</span>
+                </div>
+                <p class="muted">${esc(
+                  graphic.text || graphic.label || graphic.kind,
+                )}</p>
+                <label class="checkbox-row">
+                  <input type="checkbox" data-graphic-toggle="${esc(
+                    graphic.id,
+                  )}" data-graphic-scene="${scene.position}" ${
+                    graphic.enabled === false ? "" : "checked"
+                  } />
+                  <span>Visible</span>
+                </label>
+                ${graphic.edited ? `<span class="chip">edited</span>` : ""}
+              </div>
+            </article>`;
+          })
+          .join(""),
+      )
+      .join("");
   }
 
   function renderProductionJob() {
@@ -3144,10 +3386,16 @@
               job.id,
             )}">Retry failed stage</button>`
           : "";
+      const rerender =
+        job.video_render_id && job.status !== "running"
+          ? `<button class="button ghost small" type="button" data-rerender-production="${esc(
+              job.id,
+            )}">Re-render</button>`
+          : "";
       const review = job.video_render_id
         ? `<a class="button ghost small" href="#/review">Review and approve</a>`
         : "";
-      actions.innerHTML = `${retry}${review}`;
+      actions.innerHTML = `${retry}${rerender}${review}`;
     }
     const error = $("#prod-job-error");
     if (error) {
@@ -3201,6 +3449,9 @@
       const warningNode = $("#prod-job-warnings");
       if (warningNode) warningNode.hidden = true;
     }
+    renderProductionGenreSummary();
+    renderProductionAudio();
+    renderProductionGraphics();
     renderCaptionEditor();
   }
 
@@ -3334,10 +3585,13 @@
     }
     const payload = {
       script_id: scriptId,
-      style_key: $("#prod-style")?.value || "broadcast",
+      genre_key: $("#prod-genre")?.value || "auto",
+      genre_overrides: genreOverridesFromForm(),
+      style_key: $("#prod-style")?.value || "genre_default",
       aspect_ratio: $("#prod-aspect")?.value || "both",
       captions: Boolean($("#prod-captions")?.checked),
       asset_strategy: $("#prod-asset-strategy")?.value || "hybrid",
+      voice: $("#prod-voice")?.value || null,
       destination: $("#prod-destination")?.value || "local",
       music_path: $("#prod-music")?.value.trim() || null,
       regenerate_narration: Boolean($("#prod-renarrate")?.checked),
@@ -3384,6 +3638,24 @@
       renderProductionJob();
       ensureProductionPolling();
       toast("Retrying the failed stage.", "info");
+    });
+  }
+
+  async function rerenderProductionJob(id, button) {
+    await withButton(button, "Re-rendering…", async () => {
+      const job = await api(
+        `/production/jobs/${encodeURIComponent(id)}/rerender`,
+        { method: "POST" },
+      );
+      productionState().job = job;
+      productionState().selectedJobId = id;
+      renderProductionJob();
+      ensureProductionPolling();
+      toast(
+        "Re-rendering both aspect ratios with your caption, audio, and graphic edits.",
+        "info",
+      );
+      await loadProductionLists({ silent: true });
     });
   }
 
@@ -4689,7 +4961,48 @@
   function wireProduction() {
     $("#production-form")?.addEventListener("submit", generateProduction);
     $("#prod-style")?.addEventListener("change", renderProductionStyleSummary);
-    $("#prod-story")?.addEventListener("change", renderProductionStoryHint);
+    $("#prod-genre")?.addEventListener("change", renderGenreHint);
+    $("#prod-story")?.addEventListener("change", () => {
+      renderProductionStoryHint();
+      loadGenreRecommendation();
+    });
+    $("#prod-graphic-aspect")?.addEventListener("change", (event) => {
+      productionState().graphicAspect = event.target.value;
+      renderProductionGraphics();
+    });
+    $("#prod-voice-preview")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      await withButton(button, "Synthesising…", async () => {
+        const text =
+          selectedStory()?.title ||
+          "This is a short narration preview for the selected news genre.";
+        const response = await fetch(`${API}/production/voices/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            voice: $("#prod-voice")?.value || null,
+          }),
+        });
+        if (!response.ok) {
+          let detail = "Voice preview failed.";
+          try {
+            const payload = await response.json();
+            detail = payload.detail || detail;
+          } catch {
+            /* keep the generic message */
+          }
+          throw new Error(detail);
+        }
+        const blob = await response.blob();
+        const audio = $("#prod-voice-audio");
+        if (audio) {
+          audio.src = URL.createObjectURL(blob);
+          audio.hidden = false;
+          await audio.play().catch(() => {});
+        }
+      });
+    });
     $("#prod-refresh")?.addEventListener("click", () =>
       refreshCurrent({ manual: true }),
     );
@@ -4706,9 +5019,46 @@
       }
     });
     $("#prod-job-body")?.addEventListener("click", async (event) => {
-      const button = event.target.closest("[data-retry-production]");
-      if (!button) return;
-      await retryProductionJob(button.dataset.retryProduction, button);
+      const retry = event.target.closest("[data-retry-production]");
+      if (retry) {
+        await retryProductionJob(retry.dataset.retryProduction, retry);
+        return;
+      }
+      const rerender = event.target.closest("[data-rerender-production]");
+      if (rerender) {
+        await rerenderProductionJob(
+          rerender.dataset.rerenderProduction,
+          rerender,
+        );
+      }
+    });
+    $("#prod-graphics")?.addEventListener("change", async (event) => {
+      const input = event.target.closest("[data-graphic-toggle]");
+      if (!input) return;
+      const job = productionState().job;
+      if (!job) return;
+      const aspect = productionState().graphicAspect;
+      try {
+        await api(
+          `/production/jobs/${encodeURIComponent(job.id)}/scenes/${
+            input.dataset.graphicScene
+          }/graphics/${encodeURIComponent(aspect)}/${encodeURIComponent(
+            input.dataset.graphicToggle,
+          )}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ enabled: input.checked }),
+          },
+        );
+        await loadProductionJob(job.id, { silent: true });
+        toast(
+          "Graphic visibility saved. Use Re-render to apply it to the video.",
+          "success",
+        );
+      } catch (error) {
+        input.checked = !input.checked;
+        toast(describeError(error), "error");
+      }
     });
   }
 

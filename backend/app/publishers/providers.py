@@ -47,9 +47,7 @@ class LocalExportPublisher:
             "platform": self.platform,
             "note": "Local export only; this is not a public social-media upload.",
         }
-        (target_dir / "metadata.json").write_text(
-            json.dumps(manifest, indent=2), encoding="utf-8"
-        )
+        (target_dir / "metadata.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return PublishResult(
             status="exported",
             external_id=str(target),

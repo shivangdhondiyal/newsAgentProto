@@ -19,6 +19,7 @@ from backend.app.db.models import (
 )
 from backend.app.media.assets import AssetBrief, AssetPipeline, AssetSelection
 from backend.app.media.keywords import proper_nouns, search_keywords
+from backend.app.media.script_text import strip_meta_sentences
 from backend.app.schemas.video import VideoRunRead
 
 
@@ -201,7 +202,8 @@ class AssetAgent:
         nothing; named entities alone retrieve the best matches.
         """
 
-        text = scene.narration or scene.subtitle or ""
+        raw_text = scene.narration or scene.subtitle or ""
+        text = strip_meta_sentences(raw_text) or raw_text
         subjects = proper_nouns(text)
         keywords = search_keywords(text)
         terms: list[str] = []

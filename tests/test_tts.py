@@ -366,3 +366,113 @@ async def test_forced_renarration_refuses_approved_render(tmp_path: Path) -> Non
         assert await session.scalar(select(VideoRender)) is not None
         assert await session.scalar(select(ContentApproval)) is not None
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_narration_reads_the_planned_scene_copy(tmp_path: Path) -> None:
+    from backend.app.db.models import Scene
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        article = Article(
+            source_id="bbc-world",
+            source_name="BBC News",
+            url="https://bbc.example/planned",
+            canonical_url="https://bbc.example/planned",
+            title="Truce holds in Oleshky",
+            normalized_text="Fighting stopped after a truce.",
+        )
+        session.add(article)
+        await session.flush()
+        brief = ResearchBrief(
+            article_id=article.id,
+            status="completed",
+            headline=article.title,
+            key_facts=[],
+            context=[],
+            uncertainties=[],
+            source_count=2,
+            summarizer_name="test",
+        )
+        session.add(brief)
+        await session.flush()
+        script = NewsScript(
+            article_id=article.id,
+            research_brief_id=brief.id,
+            status="draft",
+            title=article.title,
+            hook="Here is what is known so far about the truce.",
+            introduction="This report is based on information corroborated by 3 sources.",
+            main_story=["Fighting in the city has stopped after a truce."],
+            context=[],
+            closing="This report reflects information available from the cited sources.",
+            full_text=(
+                "Here is what is known so far about the truce. This report is based on "
+                "information corroborated by 3 sources. Fighting in the city has stopped "
+                "after a truce. This report reflects information available from the cited "
+                "sources."
+            ),
+            estimated_duration_seconds=30,
+            target_duration_seconds=60,
+            writer_name="test",
+            review_reasons=[],
+        )
+        session.add(script)
+        await session.flush()
+        plan = ScenePlan(
+            script_id=script.id,
+            status="draft",
+            total_duration_seconds=30,
+            planner_name="test",
+        )
+        session.add(plan)
+        await session.flush()
+        session.add_all(
+            [
+                Scene(
+                    scene_plan_id=plan.id,
+                    position=1,
+                    start_seconds=0,
+                    duration_seconds=5,
+                    narration="Fighting in the city has stopped after a truce.",
+                    subtitle="Fighting in the city has stopped after a truce.",
+                    scene_description="City view.",
+                    stock_footage_query="city truce",
+                    image_search_query="city truce",
+                    animation_suggestion="Slow zoom.",
+                ),
+                Scene(
+                    scene_plan_id=plan.id,
+                    position=2,
+                    start_seconds=5,
+                    duration_seconds=5,
+                    narration="Aid convoys are expected on Friday.",
+                    subtitle="Aid convoys are expected on Friday.",
+                    scene_description="Aid convoy.",
+                    stock_footage_query="aid convoy",
+                    image_search_query="aid convoy",
+                    animation_suggestion="Slow zoom.",
+                ),
+            ]
+        )
+        await session.commit()
+
+        settings = Settings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            tts_output_dir=tmp_path / "audio",
+            tts_chunk_max_characters=80,
+            tts_generate_mp3=False,
+            audio_master_enabled=False,
+        )
+        agent = TTSAgent(settings, sessions, FakeSpeechSynthesizer())
+        text = await agent._narration_text(session, script, plan)
+
+    # The voiceover must match the cleaned scene copy, not the raw script with
+    # its production boilerplate.
+    assert text == (
+        "Fighting in the city has stopped after a truce.\n\nAid convoys are expected on Friday."
+    )
+    await engine.dispose()

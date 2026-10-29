@@ -53,9 +53,7 @@ async def _create_eligible_article(
                 if key_facts is not None
                 else ["Officials said an earthquake struck the city."]
             ),
-            context=(
-                context if context is not None else ["Emergency teams began a response."]
-            ),
+            context=(context if context is not None else ["Emergency teams began a response."]),
             uncertainties=[],
             source_count=source_count,
             summarizer_name="test",
@@ -125,9 +123,7 @@ async def test_script_writer_trims_context_and_main_story_to_target() -> None:
         "Officials said the earthquake struck the city while emergency crews responded "
         "through the night and residents moved to temporary shelters."
     )
-    context = [
-        "Additional background sentence about the response and recovery effort. " * 10
-    ]
+    context = ["Additional background sentence about the response and recovery effort. " * 10]
     async with sessions() as session:
         await _create_eligible_article(
             session,

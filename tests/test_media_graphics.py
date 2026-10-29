@@ -115,6 +115,7 @@ def test_platform_captions_are_tighter_for_vertical_video() -> None:
     assert portrait.max_characters < landscape.max_characters
     assert portrait.safe_bottom_ratio > landscape.safe_bottom_ratio
 
+
 def test_wide_shot_never_crops_outside_the_source_image() -> None:
     from backend.app.media.craft import crop_box, crop_focal
 
@@ -153,6 +154,7 @@ def test_photo_headline_is_light_on_a_photo_backdrop(tmp_path: Path) -> None:
         band = pixels.crop((0, 0, 640, 120)).resize((1, 1)).getpixel((0, 0))
     assert max(band) < 200
 
+
 def test_caption_is_suppressed_when_it_repeats_the_headline() -> None:
     from backend.app.media.graphics import _caption_repeats_headline
 
@@ -176,6 +178,7 @@ def test_truncated_headline_ends_with_an_ellipsis() -> None:
     long_text = "word " * 60
     headline = _headline_for(_visual(headline=long_text), preset)
     assert headline.endswith("…")
+
 
 def test_truncated_headline_stops_at_a_phrase_boundary() -> None:
     from backend.app.media.graphics import _truncate_headline
@@ -218,3 +221,165 @@ def test_headline_font_shrinks_until_the_sentence_fits() -> None:
     fitted = _fit_headline_font(draw, text, "georgiab.ttf", 96, 900, 2)
     assert fitted.size < full.size
     assert _fits_lines(draw, text, fitted, 900, 2)
+
+
+def test_headline_drops_production_boilerplate() -> None:
+    from backend.app.media.graphics import _headline_for
+
+    preset = get_preset("broadcast")
+    visual = _visual(
+        headline="",
+        subtitle="This report is based on information corroborated by 3 independent sources.",
+        narration=(
+            "This report is based on information corroborated by 3 independent sources. "
+            "Can millions of people live on the moon?"
+        ),
+    )
+    headline = _headline_for(visual, preset)
+    assert "corroborated" not in headline.lower()
+    assert "based on information" not in headline.lower()
+    assert "millions of people" in headline.lower()
+
+
+def test_headline_strips_the_context_prefix() -> None:
+    from backend.app.media.graphics import _headline_for
+
+    preset = get_preset("broadcast")
+    visual = _visual(
+        headline="",
+        subtitle="",
+        narration=(
+            "Here is what is known so far about Can millions of people live on the "
+            "moon? These scientists say yes."
+        ),
+    )
+    headline = _headline_for(visual, preset)
+    assert headline.lower().startswith("can millions")
+    assert "here is what is known" not in headline.lower()
+
+
+def test_headline_stops_on_a_word_boundary() -> None:
+    from backend.app.media.script_text import headline_for_text
+
+    headline = headline_for_text(
+        "Fighting in the Russian-occupied Ukrainian city of Oleshky has stopped "
+        "after a truce, which the White House said was secured by the US First Lady.",
+        52,
+    )
+    assert headline == "Fighting in the Russian-occupied Ukrainian city"
+    assert len(headline) <= 52
+
+
+def test_headline_drops_a_broadcast_hand_off() -> None:
+    from backend.app.media.script_text import headline_for_text
+
+    headline = headline_for_text(
+        "BBC's Ukraine correspondent, Dan Johnson, has more details.", 56
+    )
+    assert "has more" not in headline.lower()
+    assert headline == "BBC's Ukraine correspondent, Dan Johnson"
+
+
+def test_graphic_types_break_up_a_run_of_identical_panels() -> None:
+    from backend.app.media.graphics import choose_graphic_types
+
+    preset = get_preset("map_geopolitical")
+    visuals = [
+        _visual(
+            position=position,
+            narration=f"Fighting continues in the city of Oleshky. Scene {position}.",
+            headline=f"Fighting continues in the city. Scene {position}.",
+            keywords=["oleshky", "ukraine", "truce"],
+        )
+        for position in range(1, 6)
+    ]
+    types = choose_graphic_types(visuals, preset)
+
+    assert types[0] == "map"
+    assert types.count("map") <= 2
+    assert "typography" in types
+    assert all(not (left == right == "map") for left, right in zip(types, types[1:], strict=False))
+
+
+def test_hidden_asset_is_not_credited_on_a_designed_panel(tmp_path: Path) -> None:
+    from backend.app.media.graphics import render_scene_frame
+
+    asset = tmp_path / "asset.jpg"
+    Image.new("RGB", (320, 200), (90, 90, 90)).save(asset, "JPEG")
+    preset = get_preset("map_geopolitical")
+    visual = _visual(
+        narration="Fighting continues in the city of Oleshky.",
+        graphic_type="map",
+        asset_path=asset,
+        asset_kind="photo",
+        attribution="A Photographer",
+    )
+    result = render_scene_frame(visual, preset, 640, 360, tmp_path / "map.jpg")
+    # The map panel does not display the photo, so crediting it would imply the
+    # panel came from that photographer.
+    assert result.source_text == ""
+
+
+def test_strip_leading_headline_removes_a_concatenated_title() -> None:
+    from backend.app.media.script_text import strip_leading_headline
+
+    cleaned = strip_leading_headline(
+        "What we know about the truce in Oleshky Fighting in the city has stopped.",
+        "What we know about the truce in Oleshky",
+    )
+    assert cleaned == "Fighting in the city has stopped."
+
+
+def test_strip_leading_headline_keeps_a_short_remainder() -> None:
+    from backend.app.media.script_text import strip_leading_headline
+
+    text = "Truce in Oleshky ends"
+    assert strip_leading_headline(text, "Truce in Oleshky") == text
+
+
+def test_frame_source_note_has_no_operator_jargon(tmp_path: Path) -> None:
+    from backend.app.media.graphics import render_scene_frame
+
+    preset = get_preset("broadcast")
+    visual = _visual(graphic_type="typography", asset_path=None, asset_kind=None)
+    output = tmp_path / "frame.jpg"
+    result = render_scene_frame(visual, preset, 640, 360, output, show_caption=False)
+    assert result.source_text == ""
+    assert "no external asset" not in result.source_text.lower()
+
+
+def test_lower_third_is_skipped_when_captions_will_appear(tmp_path: Path, monkeypatch) -> None:
+    from backend.app.media import graphics
+
+    calls: list[str] = []
+    original = graphics._draw_lower_third
+
+    def spy(*args, **kwargs):
+        calls.append("drawn")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(graphics, "_draw_lower_third", spy)
+    preset = get_preset("broadcast")
+    visual = _visual(graphic_type="typography", asset_path=None, asset_kind=None)
+
+    graphics.render_scene_frame(
+        visual,
+        preset,
+        640,
+        360,
+        tmp_path / "with-captions.jpg",
+        show_caption=False,
+        captions_present=True,
+    )
+    assert calls == []
+
+    graphics.render_scene_frame(
+        visual,
+        preset,
+        640,
+        360,
+        tmp_path / "without-captions.jpg",
+        show_caption=False,
+        captions_present=False,
+    )
+    assert calls == ["drawn"]

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.agents.scene_planner.agent import ScenePlannerAgent
+from backend.app.agents.scene_planner.planner import RuleBasedScenePlanner
 from backend.app.core.config import Settings
 from backend.app.db.base import Base
 from backend.app.db.models import Article, NewsScript, ResearchBrief, Scene, ScenePlan
@@ -53,6 +54,30 @@ async def _add_script(session, *, status: str) -> NewsScript:
     return script
 
 
+def test_scene_subtitle_drops_credibility_boilerplate() -> None:
+    planner = RuleBasedScenePlanner()
+    scene = planner._make_scene(
+        "This report is based on information corroborated by 3 independent sources. "
+        "Officials said an earthquake struck the city.",
+        2,
+    )
+    assert "corroborated" not in scene.subtitle.lower()
+    assert "earthquake" in scene.subtitle.lower()
+    assert "corroborated" in scene.narration.lower()
+    assert scene.keywords
+
+
+def test_boilerplate_only_scene_uses_the_story_headline() -> None:
+    planner = RuleBasedScenePlanner()
+    scene = planner._make_scene(
+        "This report is based on information corroborated by 3 independent sources.",
+        2,
+        fallback_display="Earthquake strikes the city",
+    )
+    assert scene.subtitle == "Earthquake strikes the city"
+    assert "corroborated" in scene.narration.lower()
+
+
 @pytest.mark.asyncio
 async def test_scene_planner_creates_ordered_editable_timeline_for_draft_script() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -75,11 +100,36 @@ async def test_scene_planner_creates_ordered_editable_timeline_for_draft_script(
 
     assert plan is not None
     assert plan.script_id == script.id
-    assert [scene.position for scene in scenes] == [1, 2, 3, 4, 5]
+    assert [scene.position for scene in scenes] == [1, 2, 3, 4]
     assert scenes[0].start_seconds == 0
     assert scenes[-1].start_seconds + scenes[-1].duration_seconds == plan.total_duration_seconds
     assert all(scene.stock_footage_query for scene in scenes)
     await engine.dispose()
+
+
+def test_planner_drops_boilerplate_segments_and_keeps_spoken_copy_clean() -> None:
+    planner = RuleBasedScenePlanner()
+
+    class _Script:
+        title = "Truce holds in Oleshky"
+        hook = "Here is what is known so far about Truce holds in Oleshky."
+        introduction = "This report is based on information corroborated by 3 sources."
+        main_story = [
+            "Truce holds in Oleshky Fighting in the city has stopped after a truce.",
+            "Aid convoys are expected on Friday.",
+        ]
+        context: list[str] = []
+        closing = "This report reflects information available from the cited sources at this time."
+
+    segments = planner._segments(_Script())
+
+    assert segments == [
+        "Truce holds in Oleshky.",
+        "Fighting in the city has stopped after a truce.",
+        "Aid convoys are expected on Friday.",
+    ]
+    assert all("corroborated" not in segment.lower() for segment in segments)
+    assert all("what is known so far" not in segment.lower() for segment in segments)
 
 
 @pytest.mark.asyncio

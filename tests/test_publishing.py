@@ -41,9 +41,7 @@ async def _approve(seeded) -> None:
 
 
 def _request(agent: PublishingAgent) -> SimpleNamespace:
-    return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(publishing_agent=agent))
-    )
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(publishing_agent=agent)))
 
 
 @pytest.mark.asyncio
@@ -187,9 +185,7 @@ async def test_local_export_file_is_served_only_from_the_publish_root(
         record_id = record.id
     await agent.execute()
 
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(settings=seeded.settings))
-    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=seeded.settings)))
     publish_root = Path(seeded.settings.publishing_output_dir).resolve()
 
     async with seeded.sessions() as session:
@@ -231,11 +227,7 @@ async def test_youtube_provider_uses_official_resumable_upload(tmp_path: Path) -
     init_route = respx.route(
         method="POST",
         url__startswith="https://www.googleapis.com/upload/youtube/v3/videos",
-    ).mock(
-        return_value=httpx.Response(
-            200, headers={"location": "https://upload.example/session"}
-        )
-    )
+    ).mock(return_value=httpx.Response(200, headers={"location": "https://upload.example/session"}))
     upload_route = respx.put("https://upload.example/session").mock(
         return_value=httpx.Response(200, json={"id": "video123"})
     )

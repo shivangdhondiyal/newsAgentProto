@@ -215,12 +215,8 @@ def relevance_score(candidate: AssetCandidate, brief: AssetBrief) -> float:
         return 0.0
     overlap = len(query_tokens & candidate_tokens) / len(query_tokens)
     title_overlap = len(query_tokens & _tokens(candidate.title)) / max(1, len(query_tokens))
-    subject_overlap = (
-        len(subjects & candidate_tokens) / len(subjects) if subjects else 0.0
-    )
-    return round(
-        min(1.0, 0.5 * subject_overlap + 0.3 * overlap + 0.2 * title_overlap), 4
-    )
+    subject_overlap = len(subjects & candidate_tokens) / len(subjects) if subjects else 0.0
+    return round(min(1.0, 0.5 * subject_overlap + 0.3 * overlap + 0.2 * title_overlap), 4)
 
 
 def rank_candidate(candidate: AssetCandidate, brief: AssetBrief) -> float:
@@ -366,17 +362,13 @@ class WikimediaCommonsProvider:
             if not mime_type.startswith("image/"):
                 continue
             metadata = info.get("extmetadata", {}) or {}
-            license_name = _clean_html(
-                (metadata.get("LicenseShortName") or {}).get("value", "")
-            )
+            license_name = _clean_html((metadata.get("LicenseShortName") or {}).get("value", ""))
             if not license_allowed(license_name):
                 continue
             title = _clean_html(page.get("title", "")).removeprefix("File:")
             creator = _clean_html((metadata.get("Artist") or {}).get("value", "")) or None
             credit = _clean_html((metadata.get("Credit") or {}).get("value", ""))
-            description = _clean_html(
-                (metadata.get("ImageDescription") or {}).get("value", "")
-            )
+            description = _clean_html((metadata.get("ImageDescription") or {}).get("value", ""))
             license_url = _clean_html((metadata.get("LicenseUrl") or {}).get("value", ""))
             source_url = info.get("descriptionurl") or (
                 "https://commons.wikimedia.org/wiki/File:" + title.replace(" ", "_")
@@ -426,9 +418,7 @@ class NasaImageLibraryProvider:
         for item in payload.get("collection", {}).get("items", []):
             data = (item.get("data") or [{}])[0]
             links = item.get("links") or []
-            download_url = next(
-                (link.get("href") for link in links if link.get("href")), None
-            )
+            download_url = next((link.get("href") for link in links if link.get("href")), None)
             if not download_url:
                 continue
             nasa_id = str(data.get("nasa_id") or "")

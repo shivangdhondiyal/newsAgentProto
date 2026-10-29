@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from PIL import Image
 
 from backend.app.media.audio import ffprobe_for
 from backend.app.media.craft import FFMPEG_TRANSITIONS
+from backend.app.media.motion import OverlaySequence
 
 MOTION_PROFILES = {
     "static",
@@ -37,6 +39,8 @@ class SceneClip:
     motion_intensity: float = 0.2
     easing: str = "ease_in_out"
     motion_path: str = "linear"
+    video_path: Path | None = None
+    source_kind: str = "image"
 
 
 @dataclass(frozen=True)
@@ -68,9 +72,7 @@ class CaptionRender:
     def as_public_dict(self) -> dict[str, Any]:
         return {
             "ass_path": str(self.ass_path) if self.ass_path else None,
-            "soft_subtitle_path": str(self.soft_subtitle_path)
-            if self.soft_subtitle_path
-            else None,
+            "soft_subtitle_path": str(self.soft_subtitle_path) if self.soft_subtitle_path else None,
             "burn_in": self.burns_in,
             "soft_subs": self.adds_soft_track,
             "cue_count": self.cue_count,
@@ -95,6 +97,9 @@ class RenderResult:
     checks: list[RenderCheck] = field(default_factory=list)
     transition_warnings: list[str] = field(default_factory=list)
     caption: dict[str, Any] = field(default_factory=dict)
+    qa: dict[str, Any] = field(default_factory=dict)
+    contact_sheet_path: Path | None = None
+    overlays: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -114,6 +119,9 @@ class RenderResult:
             ],
             "transition_warnings": self.transition_warnings,
             "caption": self.caption,
+            "qa": self.qa,
+            "contact_sheet_path": str(self.contact_sheet_path) if self.contact_sheet_path else None,
+            "overlays": self.overlays,
         }
 
 
@@ -178,9 +186,7 @@ class FFmpegSceneRenderer:
                 return
             except OSError as exc:  # a scanner or sync client may hold the target
                 last_error = exc
-        raise RuntimeError(
-            f"Rendered video could not be moved into {output_path}: {last_error}"
-        )
+        raise RuntimeError(f"Rendered video could not be moved into {output_path}: {last_error}")
 
     async def render(
         self,
@@ -195,12 +201,19 @@ class FFmpegSceneRenderer:
         transition_seconds: float = 0.4,
         aspect_ratio: str = "16:9",
         caption_render: CaptionRender | None = None,
+        overlays: list[OverlaySequence] | None = None,
+        make_contact_sheet: bool = True,
     ) -> RenderResult:
         if not clips:
             raise ValueError("At least one scene clip is required")
         if not narration_path.is_file():
             raise FileNotFoundError(f"Narration audio not found: {narration_path}")
+        overlays = list(overlays or [])
         for clip in clips:
+            if clip.video_path is not None:
+                if not clip.video_path.is_file():
+                    raise FileNotFoundError(f"Scene video not found: {clip.video_path}")
+                continue
             if not clip.image_path.is_file():
                 raise FileNotFoundError(f"Scene frame not found: {clip.image_path}")
             try:
@@ -210,6 +223,15 @@ class FFmpegSceneRenderer:
                 raise ValueError(
                     f"Scene frame is not a decodable image: {clip.image_path}"
                 ) from exc
+        for overlay in overlays:
+            if not overlay.directory.is_dir():
+                raise FileNotFoundError(
+                    f"Motion-graphics overlay directory is missing: {overlay.directory}"
+                )
+            if not (overlay.directory / "frame-00000.png").is_file():
+                raise FileNotFoundError(
+                    f"Motion-graphics overlay has no rendered frames: {overlay.directory}"
+                )
         if caption_render is not None and caption_render.burn_in:
             ass_path = caption_render.ass_path
             if ass_path is None:
@@ -224,11 +246,7 @@ class FFmpegSceneRenderer:
                 )
         soft_path = subtitle_path
         if caption_render is not None:
-            soft_path = (
-                caption_render.soft_subtitle_path
-                if caption_render.soft_subs
-                else None
-            )
+            soft_path = caption_render.soft_subtitle_path if caption_render.soft_subs else None
             if caption_render.soft_subs and soft_path is not None and not soft_path.is_file():
                 raise FileNotFoundError(
                     f"Caption sidecar file not found: {soft_path}. "
@@ -248,22 +266,46 @@ class FFmpegSceneRenderer:
         for clip in clips:
             # Extra tail room lets the outgoing clip survive its crossfade.
             length = clip.duration_seconds + (transition if len(clips) > 1 else 0.0)
-            input_args += [
-                "-loop",
-                "1",
-                "-framerate",
-                str(self._fps),
-                "-t",
-                f"{length:.3f}",
-                "-i",
-                str(clip.image_path),
-            ]
+            if clip.video_path is not None:
+                input_args += [
+                    "-stream_loop",
+                    "-1",
+                    "-t",
+                    f"{length:.3f}",
+                    "-i",
+                    str(clip.video_path),
+                ]
+            else:
+                input_args += [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    str(self._fps),
+                    "-t",
+                    f"{length:.3f}",
+                    "-i",
+                    str(clip.image_path),
+                ]
         audio_index = len(clips)
         input_args += ["-i", str(narration_path)]
+        next_index = len(clips) + 1
         subtitle_index: int | None = None
         if soft_path is not None and soft_path.is_file():
-            subtitle_index = len(clips) + 1
+            subtitle_index = next_index
             input_args += ["-i", str(soft_path)]
+            next_index += 1
+        overlay_indices: list[int] = []
+        for overlay in overlays:
+            overlay_indices.append(next_index)
+            input_args += [
+                "-framerate",
+                str(overlay.fps),
+                "-start_number",
+                "0",
+                "-i",
+                str(overlay.pattern),
+            ]
+            next_index += 1
 
         filter_parts: list[str] = []
         for index, clip in enumerate(clips):
@@ -294,6 +336,24 @@ class FFmpegSceneRenderer:
                 )
                 current = out_label
             video_label = current
+
+        # Motion graphics are composited under burned-in captions so the caption
+        # layer always wins a collision. Each transparent PNG sequence keeps its
+        # own absolute slot, independent of scene-render order.
+        for position, overlay in enumerate(overlays):
+            overlay_index = overlay_indices[position]
+            start = max(0.0, overlay.start_seconds)
+            end = start + max(0.04, overlay.duration_seconds)
+            source_label = f"[ovsrc{position}]"
+            filter_parts.append(
+                f"[{overlay_index}:v]format=rgba,setpts=PTS-STARTPTS+{start:.3f}/TB{source_label}"
+            )
+            out_label = f"[vg{position}]"
+            filter_parts.append(
+                f"{video_label}{source_label}overlay=x=0:y=0:eof_action=pass:"
+                f"enable='between(t,{start:.3f},{end:.3f})'{out_label}"
+            )
+            video_label = out_label
 
         if caption_render is not None and caption_render.burns_in:
             assert caption_render.ass_path is not None
@@ -371,6 +431,38 @@ class FFmpegSceneRenderer:
 
         await self._publish(work_path, output_path)
 
+        contact_path: Path | None = None
+        if make_contact_sheet:
+            try:
+                contact_path = await make_video_contact_sheet(
+                    self._executable,
+                    output_path,
+                    output_path.with_name(output_path.stem + "-contact-sheet.jpg"),
+                )
+            except (OSError, RuntimeError):
+                contact_path = None
+        # A scene with an animated graphic is not a static scene even when its
+        # base frame is a still panel: the overlay supplies the motion.
+        animated: set[int] = set()
+        cursor = 0.0
+        for index, clip in enumerate(clips):
+            end = cursor + clip.duration_seconds
+            covered = sum(
+                max(
+                    0.0,
+                    min(end, overlay.start_seconds + overlay.duration_seconds)
+                    - max(cursor, overlay.start_seconds),
+                )
+                for overlay in overlays
+            )
+            if covered >= (end - cursor) * 0.5:
+                animated.add(index)
+            cursor = end
+        static_ratio = sum(
+            1
+            for index, clip in enumerate(clips)
+            if clip.motion == "static" and index not in animated
+        ) / max(1, len(clips))
         result = await validate_render(
             self._executable,
             output_path,
@@ -378,10 +470,22 @@ class FFmpegSceneRenderer:
             expected_height=height,
             expected_duration=total,
             expect_subtitle_stream=subtitle_index is not None,
+            static_scene_ratio=static_ratio,
+            overlay_count=len(overlays),
+            contact_sheet_path=contact_path,
         )
         result.transition_warnings = _transition_warnings(clips)
         if caption_render is not None:
             result.caption = caption_render.as_public_dict()
+        result.overlays = [
+            {
+                "label": overlay.label,
+                "start_seconds": round(overlay.start_seconds, 3),
+                "duration_seconds": round(overlay.duration_seconds, 3),
+                "frame_count": overlay.frame_count,
+            }
+            for overlay in overlays
+        ]
         return result
 
 
@@ -401,6 +505,13 @@ def _scene_filter(
         f"force_original_aspect_ratio=increase,"
         f"crop={width * 2}:{height * 2},setsar=1"
     )
+    if clip.video_path is not None:
+        # Real footage already carries motion. Reframing and a stable frame rate
+        # are safer than adding a synthetic zoom that fights the source camera.
+        return (
+            f"{base},scale={width}:{height},fps={fps},"
+            f"trim=duration={length:.3f},setpts=PTS-STARTPTS,format=yuv420p[v{index}]"
+        )
     if motion == "static":
         return (
             f"{base},scale={width}:{height},fps={fps},"
@@ -455,6 +566,8 @@ def _fit_clips_to_duration(clips: list[SceneClip], total: float) -> list[SceneCl
                 motion_intensity=clip.motion_intensity,
                 easing=clip.easing,
                 motion_path=clip.motion_path,
+                video_path=clip.video_path,
+                source_kind=clip.source_kind,
             )
         )
     return fitted
@@ -504,6 +617,9 @@ async def validate_render(
     expected_height: int,
     expected_duration: float,
     expect_subtitle_stream: bool = False,
+    static_scene_ratio: float | None = None,
+    overlay_count: int = 0,
+    contact_sheet_path: Path | None = None,
 ) -> RenderResult:
     checks: list[RenderCheck] = []
     size_bytes = path.stat().st_size if path.is_file() else 0
@@ -602,6 +718,58 @@ async def validate_render(
                 ),
             )
         )
+    qa = await inspect_video_quality(ffmpeg, path)
+    black = qa.get("black_intervals") or []
+    frozen = qa.get("freeze_intervals") or []
+    checks.append(
+        RenderCheck(
+            name="black_frames",
+            status="warning" if black else "passed",
+            detail=(
+                f"{len(black)} black interval(s) longer than 0.5s detected."
+                if black
+                else "No long black intervals detected."
+            ),
+        )
+    )
+    checks.append(
+        RenderCheck(
+            name="frozen_frames",
+            status="warning" if frozen else "passed",
+            detail=(
+                f"{len(frozen)} frozen interval(s) detected."
+                if frozen
+                else "No frozen intervals detected."
+            ),
+        )
+    )
+    if static_scene_ratio is not None:
+        checks.append(
+            RenderCheck(
+                name="static_scene_ratio",
+                status="warning" if static_scene_ratio > 0.65 else "passed",
+                detail=(
+                    f"{round(static_scene_ratio * 100)}% of scenes are static; "
+                    "prefer footage or a meaningful camera move."
+                ),
+            )
+        )
+    if overlay_count:
+        checks.append(
+            RenderCheck(
+                name="motion_graphics",
+                status="passed",
+                detail=f"{overlay_count} animated overlay sequence(s) composited.",
+            )
+        )
+    if contact_sheet_path is not None and contact_sheet_path.is_file():
+        checks.append(
+            RenderCheck(
+                name="contact_sheet",
+                status="passed",
+                detail=f"Inspection sheet written to {contact_sheet_path.name}.",
+            )
+        )
     return RenderResult(
         path=path,
         width=expected_width,
@@ -609,4 +777,82 @@ async def validate_render(
         duration_seconds=duration or expected_duration,
         size_bytes=size_bytes,
         checks=checks,
+        qa=qa,
+        contact_sheet_path=contact_sheet_path,
     )
+
+
+async def inspect_video_quality(ffmpeg: str, path: Path) -> dict[str, Any]:
+    """Run FFmpeg's black/freeze detectors and return structured evidence."""
+
+    process = await asyncio.create_subprocess_exec(
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(path),
+        "-vf",
+        "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=1.0",
+        "-an",
+        "-f",
+        "null",
+        "-",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    text = stderr.decode("utf-8", errors="replace")
+    black = [
+        {"start": float(start), "end": float(end), "duration": float(duration)}
+        for start, end, duration in re.findall(
+            r"black_start:\s*([0-9.]+)\s+black_end:\s*([0-9.]+)\s+black_duration:\s*([0-9.]+)",
+            text,
+        )
+    ]
+    freeze = [
+        {"start": float(start), "end": float(end), "duration": float(duration)}
+        for start, end, duration in re.findall(
+            r"freeze_start:\s*([0-9.]+)\s+freeze_end:\s*([0-9.]+)\s+freeze_duration:\s*([0-9.]+)",
+            text,
+        )
+    ]
+    return {
+        "black_intervals": black,
+        "freeze_intervals": freeze,
+        "inspected_with": "ffmpeg blackdetect+freezedetect",
+    }
+
+
+async def make_video_contact_sheet(
+    ffmpeg: str,
+    video_path: Path,
+    output_path: Path,
+    *,
+    columns: int = 4,
+    rows: int = 3,
+) -> Path:
+    """Sample the finished video into a contact sheet for real visual inspection."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    process = await asyncio.create_subprocess_exec(
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"fps=1/2,scale=480:-2,tile={columns}x{rows}:padding=4:margin=4",
+        "-frames:v",
+        "1",
+        str(output_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0 or not output_path.is_file():
+        raise RuntimeError(
+            f"FFmpeg contact sheet failed: {stderr.decode('utf-8', errors='replace')[-800:]}"
+        )
+    return output_path

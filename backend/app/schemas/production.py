@@ -12,6 +12,8 @@ class ProductionJobCreate(BaseModel):
     script_id: str | None = None
     article_id: str | None = None
     style_key: str = Field(default="broadcast", max_length=60)
+    genre_key: str = Field(default="auto", max_length=60)
+    genre_overrides: dict[str, Any] = {}
     aspect_ratio: AspectChoice = "both"
     captions: bool = True
     asset_strategy: str = Field(default="hybrid", max_length=40)
@@ -51,6 +53,8 @@ class VideoVariantRead(BaseModel):
     duration_seconds: float
     status: str
     checks_json: list[dict[str, Any]] = []
+    contact_sheet_path: str | None = None
+    contact_sheet_url: str | None = None
     file_url: str | None = None
 
 
@@ -79,6 +83,10 @@ class ScenePreviewRead(BaseModel):
     frame_16x9: str | None = None
     frame_9x16: str | None = None
     asset: AssetLicenseRead | None = None
+    editing_plan: dict[str, Any] = {}
+    graphic_plan: dict[str, Any] = {}
+    graphics: list[dict[str, Any]] = []
+    graphics_by_aspect: dict[str, list[dict[str, Any]]] = {}
 
 
 class ProductionJobRead(BaseModel):
@@ -91,6 +99,9 @@ class ProductionJobRead(BaseModel):
     article_id: str | None = None
     video_render_id: str | None = None
     style_key: str
+    genre_key: str | None = None
+    genre_name: str | None = None
+    genre_profile_json: dict[str, Any] = {}
     aspect_ratio: str
     requested_by: str
     fingerprint: str
@@ -105,6 +116,8 @@ class ProductionJobRead(BaseModel):
     stages: list[ProductionStageRead] = []
     variants: list[VideoVariantRead] = []
     caption_track: dict[str, Any] | None = None
+    audio: dict[str, Any] | None = None
+    genre_summary: dict[str, Any] | None = None
     scenes: list[ScenePreviewRead] = []
     title: str | None = None
     article_title: str | None = None
@@ -159,6 +172,9 @@ class ProductionConfigRead(BaseModel):
     ffmpeg_available: bool
     piper_available: bool
     captions_available: bool
+    genres: list[dict[str, Any]] = []
+    voices: list[dict[str, Any]] = []
+    audio_defaults: dict[str, Any] = {}
     caption_presets: list[dict[str, Any]] = []
     caption_defaults: dict[str, Any] = {}
     caption_transcription: dict[str, Any] = {}
@@ -167,6 +183,38 @@ class ProductionConfigRead(BaseModel):
     aspect_options: list[str]
     duration_limits: dict[str, int]
     licensing_note: str
+
+
+class VoicePreviewRequest(BaseModel):
+    text: str = Field(default="", max_length=400)
+    voice: str | None = Field(default=None, max_length=255)
+    rate: float | None = Field(default=None, ge=0.6, le=1.6)
+    expressiveness: float | None = Field(default=None, ge=0.0, le=1.5)
+
+
+class ProductionJobSettingsUpdate(BaseModel):
+    """Edits that are allowed before or between production runs."""
+
+    genre_key: str | None = Field(default=None, max_length=60)
+    genre_overrides: dict[str, Any] | None = None
+    style_key: str | None = Field(default=None, max_length=60)
+    audio_overrides: dict[str, Any] | None = None
+    captions: bool | None = None
+
+
+class GraphicSpecUpdate(BaseModel):
+    enabled: bool | None = None
+    text: str | None = Field(default=None, max_length=400)
+    secondary_text: str | None = Field(default=None, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
+    source: str | None = Field(default=None, max_length=200)
+    x: float | None = Field(default=None, ge=0.0, le=1.0)
+    y: float | None = Field(default=None, ge=0.0, le=1.0)
+    width: float | None = Field(default=None, ge=0.05, le=1.0)
+    height: float | None = Field(default=None, ge=0.03, le=1.0)
+    entry: str | None = Field(default=None, max_length=40)
+    easing: str | None = Field(default=None, max_length=40)
+    duration_seconds: float | None = Field(default=None, ge=0.5, le=30.0)
 
 
 class ProductionDefaultsUpdate(BaseModel):

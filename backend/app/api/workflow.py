@@ -118,9 +118,7 @@ async def trigger_workflow(
     payload: WorkflowTriggerRequest,
     request: Request,
 ) -> WorkflowTriggerRead:
-    dispatcher: WorkflowDispatcher | None = getattr(
-        request.app.state, "workflow_dispatcher", None
-    )
+    dispatcher: WorkflowDispatcher | None = getattr(request.app.state, "workflow_dispatcher", None)
     if dispatcher is None:
         raise HTTPException(
             status_code=503,

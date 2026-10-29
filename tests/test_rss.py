@@ -87,9 +87,7 @@ async def test_rss_collector_strips_summary_markup_and_extraction_labels() -> No
     assert articles[0].title == "Example & headline"
     assert articles[0].summary == "Summary with markup & entities."
     assert "Published" not in articles[0].normalized_text
-    assert articles[0].normalized_text.startswith(
-        "This is the verified body. Second sentence."
-    )
+    assert articles[0].normalized_text.startswith("This is the verified body. Second sentence.")
 
 
 @pytest.mark.asyncio

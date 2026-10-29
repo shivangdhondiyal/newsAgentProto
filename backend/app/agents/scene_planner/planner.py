@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from backend.app.agents.scene_planner.contracts import PlannedScene
 from backend.app.db.models import NewsScript
 from backend.app.media.keywords import search_keywords
+from backend.app.media.script_text import strip_leading_headline, strip_meta_sentences
 
 
 class RuleBasedScenePlanner:
@@ -13,7 +14,7 @@ class RuleBasedScenePlanner:
     def plan(self, script: NewsScript) -> list[PlannedScene]:
         segments = self._segments(script)
         return [
-            self._make_scene(segment, position)
+            self._make_scene(segment, position, fallback_display=script.title)
             for position, segment in enumerate(segments, start=1)
         ]
 
@@ -25,10 +26,31 @@ class RuleBasedScenePlanner:
             *script.context,
             script.closing,
         ]
-        return [" ".join(group.split()) for group in groups if group and group.strip()]
+        title = " ".join((script.title or "").split())
+        # Production boilerplate ("Here is what is known so far...", "This
+        # report is based on...") is spoken as well as shown, so it is removed
+        # before narration is generated. A segment that is only boilerplate is
+        # dropped instead of being narrated to the viewer.
+        segments: list[str] = []
+        for group in groups:
+            if not group or not group.strip():
+                continue
+            cleaned = strip_meta_sentences(group)
+            cleaned = strip_leading_headline(cleaned, title)
+            if cleaned:
+                segments.append(cleaned)
+        if not segments and title:
+            segments = [title]
+        return segments
 
-    def _make_scene(self, narration: str, position: int) -> PlannedScene:
-        keywords = self._keywords(narration)
+    def _make_scene(
+        self, narration: str, position: int, *, fallback_display: str = ""
+    ) -> PlannedScene:
+        # Segments arrive already cleaned; keep the strip for callers that plan
+        # raw script text directly. A segment that is *only* boilerplate falls
+        # back to the story headline instead of a blank card.
+        display = strip_meta_sentences(narration) or fallback_display or narration
+        keywords = self._keywords(display)
         query = " ".join(keywords) or "news context"
         if position == 1:
             description = "Use a restrained opening title card or relevant establishing image."
@@ -45,7 +67,7 @@ class RuleBasedScenePlanner:
             animation = "Simple crossfade with a subtle caption reveal."
         return PlannedScene(
             narration=narration,
-            subtitle=narration,
+            subtitle=display,
             keywords=keywords,
             scene_description=description,
             stock_footage_query=f"{query} neutral news footage",

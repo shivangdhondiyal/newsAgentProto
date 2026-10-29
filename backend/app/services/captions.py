@@ -102,12 +102,8 @@ class CaptionService:
             raise CaptionNotFound("Caption track not found")
         return track
 
-    async def get_for_script(
-        self, session: AsyncSession, script_id: str
-    ) -> CaptionTrack | None:
-        return await session.scalar(
-            select(CaptionTrack).where(CaptionTrack.script_id == script_id)
-        )
+    async def get_for_script(self, session: AsyncSession, script_id: str) -> CaptionTrack | None:
+        return await session.scalar(select(CaptionTrack).where(CaptionTrack.script_id == script_id))
 
     async def get_for_narration(
         self, session: AsyncSession, narration_id: str
@@ -210,12 +206,13 @@ class CaptionService:
             base = replace(base, preset_key=selected_preset)
 
         if track is not None and not force:
-            same_narration = (
-                narration is not None and track.narration_audio_id == narration.id
-            )
+            same_narration = narration is not None and track.narration_audio_id == narration.id
             same_timing = not track.audio_fingerprint or track.audio_fingerprint == fingerprint
             if same_narration and same_timing and track.cues_json:
-                return track
+                # A different caption preset is an explicit presentation change:
+                # regenerate, but never discard a manually edited track.
+                if track.preset_key == selected_preset or track.edited:
+                    return track
             if track.edited and track.cues_json:
                 track.stale = True
                 track.stale_reason = (
@@ -529,16 +526,11 @@ class CaptionService:
         track = await self.get_track(session, track_id)
         if track.status == "rendering":
             raise CaptionConflict("Captions are rendering; wait for the render to finish.")
-        parsed = [
-            cue if isinstance(cue, CaptionCue) else CaptionCue.from_dict(cue)
-            for cue in cues
-        ]
+        parsed = [cue if isinstance(cue, CaptionCue) else CaptionCue.from_dict(cue) for cue in cues]
         parsed = _normalise_cues(parsed)
         if not parsed:
             raise CaptionError("A caption track must contain at least one cue.")
-        base = CaptionSettings.from_dict(
-            track.settings_json, preset_settings(track.preset_key)
-        )
+        base = CaptionSettings.from_dict(track.settings_json, preset_settings(track.preset_key))
         if settings is not None:
             base = (
                 settings
@@ -634,9 +626,7 @@ class CaptionService:
         *,
         output_dir: Path | None = None,
     ) -> CaptionAssets:
-        settings = CaptionSettings.from_dict(
-            track.settings_json, preset_settings(track.preset_key)
-        )
+        settings = CaptionSettings.from_dict(track.settings_json, preset_settings(track.preset_key))
         cues = [CaptionCue.from_dict(item) for item in (track.cues_json or [])]
         directory = output_dir or (self._settings.caption_output_dir / track.id)
         directory.mkdir(parents=True, exist_ok=True)
@@ -687,9 +677,7 @@ class CaptionService:
         track.status = "completed"
         await session.commit()
 
-    async def mark_failed(
-        self, session: AsyncSession, track_id: str, error: str
-    ) -> None:
+    async def mark_failed(self, session: AsyncSession, track_id: str, error: str) -> None:
         track = await self.get_track(session, track_id)
         track.status = "failed"
         track.warnings = _dedupe([*(track.warnings or []), error])
@@ -728,9 +716,7 @@ class CaptionService:
     def serialize_track(
         self, track: CaptionTrack, *, duration_seconds: float | None = None
     ) -> dict[str, Any]:
-        settings = CaptionSettings.from_dict(
-            track.settings_json, preset_settings(track.preset_key)
-        )
+        settings = CaptionSettings.from_dict(track.settings_json, preset_settings(track.preset_key))
         cues = [CaptionCue.from_dict(item) for item in (track.cues_json or [])]
         return {
             "id": track.id,

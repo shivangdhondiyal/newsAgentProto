@@ -53,13 +53,9 @@ def _service(request: Request) -> CaptionService:
 
 
 def _production(request: Request) -> ProductionService:
-    service: ProductionService | None = getattr(
-        request.app.state, "production_service", None
-    )
+    service: ProductionService | None = getattr(request.app.state, "production_service", None)
     if service is None:
-        raise HTTPException(
-            status_code=503, detail="Production service is not available"
-        )
+        raise HTTPException(status_code=503, detail="Production service is not available")
     return service
 
 

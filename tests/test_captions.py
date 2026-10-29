@@ -178,9 +178,7 @@ def test_settings_validation_rejects_unreadable_frame_geometry() -> None:
     )
     checks = {
         check.name: check
-        for check in validate_settings(
-            settings, width=1920, height=1080, aspect_ratio="16:9"
-        )
+        for check in validate_settings(settings, width=1920, height=1080, aspect_ratio="16:9")
     }
     assert checks["frame_width"].status == "failed"
 
@@ -339,9 +337,7 @@ async def test_import_replaces_cues_and_marks_track_imported(tmp_path: Path) -> 
     )
     async with sessions() as session:
         track = await service.generate_for_script(session, script_id)
-        imported = await service.import_subtitles(
-            session, track.id, content=content, format="srt"
-        )
+        imported = await service.import_subtitles(session, track.id, content=content, format="srt")
         assert imported.source == "imported"
         assert [cue["text"] for cue in imported.cues_json] == [
             "Imported first line.",
@@ -369,8 +365,6 @@ async def test_narration_change_marks_existing_track_stale(tmp_path: Path) -> No
         assert updated is not None
         assert updated.stale is True
         assert updated.stale_reason == "Narration changed."
-        stored = await session.scalar(
-            select(CaptionTrack).where(CaptionTrack.id == track.id)
-        )
+        stored = await session.scalar(select(CaptionTrack).where(CaptionTrack.id == track.id))
         assert stored is not None and stored.stale is True
     await engine.dispose()

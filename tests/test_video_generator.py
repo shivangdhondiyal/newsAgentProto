@@ -65,9 +65,7 @@ class FakeVideoRenderer:
                 "width": width,
                 "height": height,
                 "clips": len(clips),
-                "caption": caption_render.as_public_dict()
-                if caption_render is not None
-                else None,
+                "caption": caption_render.as_public_dict() if caption_render is not None else None,
             }
         )
         return RenderResult(
@@ -212,11 +210,7 @@ async def test_video_generator_creates_dual_aspect_drafts(
     async with sessions() as session:
         render = await session.scalar(select(VideoRender))
         variants = list(
-            (
-                await session.scalars(
-                    select(VideoVariant).order_by(VideoVariant.aspect_ratio)
-                )
-            ).all()
+            (await session.scalars(select(VideoVariant).order_by(VideoVariant.aspect_ratio))).all()
         )
 
     assert render is not None
@@ -235,6 +229,7 @@ async def test_video_generator_creates_dual_aspect_drafts(
     frame_dir = Path(render.video_path).parent / "frames" / "16x9"
     assert (frame_dir / "scene-001.jpg").is_file()
     await engine.dispose()
+
 
 @pytest.mark.asyncio
 async def test_video_generator_skips_a_narration_whose_audio_file_is_missing(
@@ -364,9 +359,7 @@ async def test_video_generator_burns_in_the_persisted_caption_track(
         assert caption["source"] == "narration_alignment"
     async with seeded.sessions() as session:
         track = await session.scalar(
-            select(CaptionTrack).where(
-                CaptionTrack.narration_audio_id == seeded.narration_id
-            )
+            select(CaptionTrack).where(CaptionTrack.narration_audio_id == seeded.narration_id)
         )
     assert track is not None
     assert track.status == "completed"

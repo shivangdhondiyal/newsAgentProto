@@ -29,10 +29,17 @@ from backend.app.db.models import (
 from backend.app.media.audio import mix_music, resolve_executable
 from backend.app.media.captions import default_fonts_dir
 from backend.app.media.craft import shot_for_position, transition_for_scene
-from backend.app.media.graphics import SceneVisual, render_scene_frame
+from backend.app.media.genres import build_effective_profile
+from backend.app.media.graphics import SceneVisual, choose_graphic_types, render_scene_frame
 from backend.app.media.keywords import search_keywords
-from backend.app.media.presets import EditingPreset, get_preset
+from backend.app.media.motion import (
+    apply_saved_graphics,
+    plan_graphics_for_timeline,
+    render_scene_overlays,
+)
+from backend.app.media.presets import EditingPreset
 from backend.app.media.renderer import CaptionRender, FFmpegSceneRenderer, SceneClip
+from backend.app.media.script_text import headline_for_text
 from backend.app.media.timeline import align_scenes_to_narration
 from backend.app.reviews.service import get_or_create_approval
 from backend.app.schemas.video import VideoRunRead
@@ -74,6 +81,9 @@ class VideoGeneratorAgent:
         narration_id: str | None = None,
         music_path: Path | None = None,
         captions: bool = True,
+        genre_key: str | None = None,
+        genre_overrides: dict[str, Any] | None = None,
+        audio_path: Path | None = None,
     ) -> VideoRunRead:
         started_at = datetime.now(UTC)
         started_clock = perf_counter()
@@ -108,6 +118,9 @@ class VideoGeneratorAgent:
                         aspects=aspects,
                         music_path=music_path,
                         captions=captions,
+                        genre_key=genre_key,
+                        genre_overrides=genre_overrides,
+                        audio_path=audio_path,
                     )
                     run.items_created += 1
                     if warnings:
@@ -158,6 +171,9 @@ class VideoGeneratorAgent:
         aspects: list[str] | None,
         music_path: Path | None = None,
         captions: bool = True,
+        genre_key: str | None = None,
+        genre_overrides: dict[str, Any] | None = None,
+        audio_path: Path | None = None,
     ) -> list[str]:
         chunks = list(
             (
@@ -186,9 +202,7 @@ class VideoGeneratorAgent:
         )
         if existing is not None:
             publishing = await session.scalar(
-                select(PublishingRecord.id).where(
-                    PublishingRecord.video_render_id == existing.id
-                )
+                select(PublishingRecord.id).where(PublishingRecord.video_render_id == existing.id)
             )
             if publishing:
                 raise ValueError(
@@ -196,11 +210,78 @@ class VideoGeneratorAgent:
                     "instead of re-rendering the approved artifact"
                 )
 
-        preset = get_preset(style_key or self._settings.video_default_style)
+        script = await session.get(NewsScript, narration.script_id)
+        story_text = " ".join(
+            part
+            for part in (
+                script.title if script else "",
+                script.full_text if script else "",
+                " ".join(scene.narration for scene in scenes),
+            )
+            if part
+        )
+        profile = build_effective_profile(
+            genre_key or "general_news",
+            style_key=style_key or self._settings.video_default_style,
+            story_text=story_text,
+            overrides=genre_overrides,
+        )
+        preset = profile.preset
         timings = align_scenes_to_narration(scenes, chunks, narration.duration_seconds)
         scene_assets = await self._load_scene_assets(session, [scene.id for scene in scenes])
         output_dir = self._settings.video_output_dir / narration.id
         output_dir.mkdir(parents=True, exist_ok=True)
+        asset_lookup: dict[int, tuple[bool, str]] = {}
+        for scene in scenes:
+            row = scene_assets.get(scene.id)
+            if row is None:
+                asset_lookup[scene.position] = (False, "graphic")
+                continue
+            scene_asset, asset = row
+            ready = bool(
+                scene_asset.status == "ready"
+                and asset is not None
+                and Path(asset.local_path).is_file()
+            )
+            kind = "graphic"
+            if ready and asset is not None:
+                suffix = Path(asset.local_path).suffix.lower()
+                kind = (
+                    "video"
+                    if asset.media_type == "video" or suffix in {".mp4", ".mov", ".webm", ".mkv"}
+                    else "photo"
+                )
+            asset_lookup[scene.position] = (ready, kind)
+        requested = _normalize_aspects(aspects or self._settings.video_aspects)
+        # Frame templates are chosen once for the whole run so the overlay
+        # planner can complement them instead of re-adding a panel on top.
+        frame_types = self._frame_types(scenes, timings, scene_assets, preset)
+        plans_by_aspect = {
+            aspect: plan_graphics_for_timeline(
+                scenes=scenes,
+                timings=timings,
+                preset=preset,
+                profile=profile,
+                asset_lookup=asset_lookup,
+                aspect_ratio=aspect,
+                captions_enabled=captions,
+                frame_types=frame_types,
+            )
+            for aspect in requested
+        }
+        # Restore operator edits from the persisted per-aspect plan. Automatic
+        # planning refreshes everything else but never overwrites an edit.
+        saved_by_scene = {
+            scene.position: (scene.graphic_plan_json or {}).get("aspects") or {} for scene in scenes
+        }
+        for aspect, aspect_plans in plans_by_aspect.items():
+            plans_by_aspect[aspect] = [
+                apply_saved_graphics(
+                    plan,
+                    saved_by_scene.get(plan.scene_position, {}).get(aspect),
+                )
+                for plan in aspect_plans
+            ]
         caption_track = None
         if captions and self._caption_service is not None:
             # The production pipeline generates captions in its own stage. A
@@ -237,6 +318,15 @@ class VideoGeneratorAgent:
                         "animation_suggestion": scene.animation_suggestion,
                         "transition": scene.transition,
                         "style_key": preset.key,
+                        "genre_key": profile.genre.key,
+                        "editing_plan": next(
+                            (
+                                plan.to_dict()
+                                for plan in plans_by_aspect.get("16:9", [])
+                                if plan.scene_position == scene.position
+                            ),
+                            {},
+                        ),
                     }
                     for scene, timing in zip(scenes, timings, strict=True)
                 ],
@@ -245,7 +335,6 @@ class VideoGeneratorAgent:
             encoding="utf-8",
         )
 
-        requested = _normalize_aspects(aspects or self._settings.video_aspects)
         warnings: list[str] = []
         for scene in scenes:
             row = scene_assets.get(scene.id)
@@ -259,8 +348,16 @@ class VideoGeneratorAgent:
                     f"Scene {scene.position}: the licensed asset file is missing; "
                     "a designed graphic is used instead."
                 )
-        audio_path = Path(narration.wav_path)
-        if music_path is not None and music_path.is_file():
+        render_audio_path = (
+            audio_path
+            if audio_path is not None and audio_path.is_file()
+            else Path(narration.wav_path)
+        )
+        if (
+            render_audio_path == Path(narration.wav_path)
+            and music_path is not None
+            and music_path.is_file()
+        ):
             ffmpeg = resolve_executable(self._settings.video_ffmpeg_executable)
             if ffmpeg is None:
                 warnings.append("FFmpeg was unavailable; licensed music was not mixed.")
@@ -275,7 +372,7 @@ class VideoGeneratorAgent:
                     music_gain=preset.craft.music_gain,
                     ducking=preset.craft.ducking,
                 )
-                audio_path = mixed_path
+                render_audio_path = mixed_path
         if caption_track is not None:
             assert self._caption_service is not None
             await self._caption_service.mark_rendering(session, caption_track.id)
@@ -287,11 +384,13 @@ class VideoGeneratorAgent:
                 timings=timings,
                 scene_assets=scene_assets,
                 preset=preset,
-                audio_path=audio_path,
+                audio_path=render_audio_path,
                 subtitle_path=subtitle_path,
                 narration=narration,
                 burn_scene_captions=captions and caption_track is None,
                 caption_track=caption_track,
+                plans_by_aspect=plans_by_aspect,
+                frame_types=frame_types,
             )
         except Exception as exc:
             if caption_track is not None:
@@ -303,11 +402,31 @@ class VideoGeneratorAgent:
                 assert self._caption_service is not None
                 await self._caption_service.mark_completed(session, caption_track.id)
         warnings.extend(render_warnings)
+        for scene in scenes:
+            plans = [
+                plan.to_dict()
+                for aspect_plans in plans_by_aspect.values()
+                for plan in aspect_plans
+                if plan.scene_position == scene.position
+            ]
+            if plans:
+                scene.graphic_plan_json = {
+                    "aspects": {
+                        aspect: next(
+                            (
+                                plan.to_dict()
+                                for plan in aspect_plans
+                                if plan.scene_position == scene.position
+                            ),
+                            {},
+                        )
+                        for aspect, aspect_plans in plans_by_aspect.items()
+                    }
+                }
+                scene.editing_plan_json = plans[0]
 
         canonical_aspect = "16:9" if "16:9" in rendered else next(iter(rendered))
-        canonical_path, canonical_w, canonical_h, canonical_duration, _ = rendered[
-            canonical_aspect
-        ]
+        canonical_path, canonical_w, canonical_h, canonical_duration, _ = rendered[canonical_aspect]
         render = existing or VideoRender(
             narration_audio_id=narration.id,
             scene_plan_id=scene_plan.id,
@@ -378,19 +497,30 @@ class VideoGeneratorAgent:
         narration: NarrationAudio,
         burn_scene_captions: bool,
         caption_track: Any,
-    ) -> tuple[
-        dict[str, tuple[Path, int, int, float, list[dict[str, str]]]], list[str]
-    ]:
+        plans_by_aspect: dict[str, list[Any]] | None = None,
+        frame_types: dict[int, str] | None = None,
+    ) -> tuple[dict[str, tuple[Path, int, int, float, list[dict[str, str]]]], list[str]]:
         rendered: dict[str, tuple[Path, int, int, float, list[dict[str, str]]]] = {}
         warnings: list[str] = []
+        plans_by_aspect = plans_by_aspect or {}
         for aspect in requested:
             width, height = self._size_for(aspect)
             frame_dir = output_dir / "frames" / aspect.replace(":", "x")
+            plan_rows = {plan.scene_position: plan for plan in plans_by_aspect.get(aspect, [])}
             clips: list[SceneClip] = []
-            for index, (scene, timing) in enumerate(zip(scenes, timings, strict=True)):
-                visual = self._scene_visual(
-                    scene, timing, scene_assets.get(scene.id), preset
-                )
+            overlays: list[Any] = []
+            visuals = [
+                self._scene_visual(scene, timing, scene_assets.get(scene.id), preset)
+                for scene, timing in zip(scenes, timings, strict=True)
+            ]
+            # Reuse the run-level choice so the frame and its overlays agree.
+            for visual in visuals:
+                chosen = (frame_types or {}).get(visual.position)
+                if chosen:
+                    visual.graphic_type = chosen
+            for index, (scene, timing, visual) in enumerate(
+                zip(scenes, timings, visuals, strict=True)
+            ):
                 frame_path = frame_dir / f"scene-{scene.position:03d}.jpg"
                 frame = render_scene_frame(
                     visual,
@@ -400,6 +530,7 @@ class VideoGeneratorAgent:
                     frame_path,
                     aspect_ratio=aspect,
                     show_caption=burn_scene_captions,
+                    captions_present=burn_scene_captions or caption_track is not None,
                 )
                 transition = _transition_for(index, len(scenes), preset)
                 motion = (
@@ -408,6 +539,19 @@ class VideoGeneratorAgent:
                     in {"map", "chart", "timeline", "diagram", "stat", "quote", "split"}
                     else preset.motion
                 )
+                clip_video: Path | None = None
+                asset_row = scene_assets.get(scene.id)
+                if asset_row is not None:
+                    scene_asset, asset = asset_row
+                    if scene_asset.status == "ready" and asset is not None:
+                        candidate = Path(asset.local_path)
+                        suffix = candidate.suffix.lower()
+                        if candidate.is_file() and (
+                            asset.media_type == "video"
+                            or suffix in {".mp4", ".mov", ".webm", ".mkv"}
+                        ):
+                            clip_video = candidate
+                            motion = "static"
                 clips.append(
                     SceneClip(
                         position=scene.position,
@@ -418,8 +562,34 @@ class VideoGeneratorAgent:
                         motion_intensity=preset.motion_intensity,
                         easing=preset.craft.easing,
                         motion_path=preset.craft.motion_path,
+                        video_path=clip_video,
+                        source_kind="video" if clip_video else "image",
                     )
                 )
+            graphic_dir = output_dir / "graphics" / aspect.replace(":", "x")
+            for plan in plan_rows.values():
+                overlays.extend(
+                    render_scene_overlays(
+                        plan,
+                        preset,
+                        width=width,
+                        height=height,
+                        fps=self._settings.video_fps,
+                        output_dir=graphic_dir,
+                        aspect_ratio=aspect,
+                    )
+                )
+                failed_graphics = [
+                    check for check in plan.checks if check.get("status") == "failed"
+                ]
+                if failed_graphics:
+                    raise ValueError(
+                        f"{aspect} motion-graphics plan failed: "
+                        + "; ".join(
+                            f"{check.get('name')}: {check.get('detail')}"
+                            for check in failed_graphics
+                        )
+                    )
             caption_render = await self._caption_render_for(caption_track, aspect)
             video_path = output_dir / f"draft-{aspect.replace(':', 'x')}.mp4"
             render_kwargs: dict[str, Any] = {
@@ -430,6 +600,8 @@ class VideoGeneratorAgent:
             }
             if caption_render is not None:
                 render_kwargs["caption_render"] = caption_render
+            if overlays:
+                render_kwargs["overlays"] = overlays
             result = await self._renderer.render(
                 clips,
                 audio_path,
@@ -462,6 +634,8 @@ class VideoGeneratorAgent:
                         ),
                     }
                 )
+            # The renderer reports the composited overlay count itself; a second
+            # check here would show the same fact twice in the QA panel.
             rendered[aspect] = (
                 result.path,
                 result.width,
@@ -489,9 +663,7 @@ class VideoGeneratorAgent:
             assets = await self._caption_service.write_assets(track)
             track.srt_path = str(assets.srt_path)
             track.vtt_path = str(assets.vtt_path)
-            track.ass_paths = {
-                key: str(value) for key, value in assets.ass_paths.items()
-            }
+            track.ass_paths = {key: str(value) for key, value in assets.ass_paths.items()}
             ass_path = assets.ass_paths.get(aspect)
             soft_path = assets.srt_path
         return CaptionRender(
@@ -517,9 +689,31 @@ class VideoGeneratorAgent:
                         SceneAsset.role == "primary",
                     )
                 )
-            ).tuples().all()
+            )
+            .tuples()
+            .all()
         )
         return {scene_asset.scene_id: (scene_asset, asset) for scene_asset, asset in rows}
+
+    def _frame_types(
+        self,
+        scenes: list[Scene],
+        timings: list[Any],
+        scene_assets: dict[str, tuple[SceneAsset, VisualAsset | None]],
+        preset: EditingPreset,
+    ) -> dict[int, str]:
+        """Choose the run's frame templates once, before overlays are planned."""
+
+        visuals = [
+            self._scene_visual(scene, timing, scene_assets.get(scene.id), preset)
+            for scene, timing in zip(scenes, timings, strict=True)
+        ]
+        return {
+            visual.position: graphic_type
+            for visual, graphic_type in zip(
+                visuals, choose_graphic_types(visuals, preset), strict=True
+            )
+        }
 
     def _scene_visual(
         self,
@@ -529,6 +723,7 @@ class VideoGeneratorAgent:
         preset: EditingPreset,
     ) -> SceneVisual:
         asset_path: Path | None = None
+        asset_kind = "graphic"
         attribution: str | None = None
         source_url: str | None = None
         focal_x = 0.5
@@ -538,7 +733,12 @@ class VideoGeneratorAgent:
             if scene_asset.status == "ready" and asset is not None:
                 candidate_path = Path(asset.local_path)
                 if candidate_path.is_file():
-                    asset_path = candidate_path
+                    suffix = candidate_path.suffix.lower()
+                    if asset.media_type == "video" or suffix in {".mp4", ".mov", ".webm", ".mkv"}:
+                        asset_kind = "video"
+                    else:
+                        asset_path = candidate_path
+                        asset_kind = "photo"
                     attribution = asset.attribution or asset.creator or asset.license_name
                     source_url = asset.source_url
                     focal_x = asset.focal_x
@@ -549,18 +749,19 @@ class VideoGeneratorAgent:
             duration_seconds=timing.duration_seconds,
             narration=scene.narration,
             subtitle=scene.subtitle,
-            headline=scene.subtitle or scene.narration,
+            headline=headline_for_text(
+                scene.subtitle or scene.narration or "",
+                max(preset.landscape.max_headline_chars, preset.portrait.max_headline_chars * 2),
+            ),
             keywords=list(
-                search_keywords(scene.narration or scene.subtitle or "")
-                or scene.keywords
-                or []
+                search_keywords(scene.narration or scene.subtitle or "") or scene.keywords or []
             ),
             scene_description=scene.scene_description,
             image_query=scene.image_search_query,
             animation_suggestion=scene.animation_suggestion,
             transition=scene.transition,
             asset_path=asset_path,
-            asset_kind="photo" if asset_path else "graphic",
+            asset_kind=asset_kind,
             attribution=attribution,
             source_url=source_url,
             focal_x=focal_x,
@@ -601,6 +802,4 @@ def _transition_for(index: int, total: int, preset: EditingPreset) -> str:
             scene_index=index,
             is_boundary=True,
         )
-    return transition_for_scene(
-        "cut", preset.craft, scene_index=index, is_boundary=False
-    )
+    return transition_for_scene("cut", preset.craft, scene_index=index, is_boundary=False)

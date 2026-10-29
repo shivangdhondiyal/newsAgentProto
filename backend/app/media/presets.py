@@ -33,7 +33,6 @@ class CraftRules:
     )
 
 
-
 @dataclass(frozen=True)
 class Palette:
     """A small, deliberately restrained palette used by every generated frame."""

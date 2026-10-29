@@ -71,11 +71,7 @@ def _merge_short_units(units: list[str], max_characters: int) -> list[str]:
 
     merged: list[str] = []
     for unit in units:
-        if (
-            merged
-            and len(unit) < 16
-            and len(merged[-1]) + 1 + len(unit) <= max_characters
-        ):
+        if merged and len(unit) < 16 and len(merged[-1]) + 1 + len(unit) <= max_characters:
             merged[-1] = f"{merged[-1]} {unit}"
         else:
             merged.append(unit)

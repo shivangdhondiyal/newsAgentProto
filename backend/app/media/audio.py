@@ -185,7 +185,7 @@ async def master_narration(
         "equalizer=f=3200:t=q:w=1.2:g=1.5",
         "acompressor=threshold=-18dB:ratio=2.5:attack=8:release=180:makeup=2",
         _loudnorm_filter(measurements, target_lufs, true_peak),
-        "alimiter=limit=0.891",
+        "alimiter=limit=0.891:level=false",
         "afade=t=in:st=0:d=0.15",
         f"afade=t=out:st={fade_out:.3f}:d=0.45",
         f"aresample={sample_rate}",

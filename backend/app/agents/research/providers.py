@@ -93,9 +93,7 @@ class LocalCorpusResearchProvider:
                 (
                     (
                         candidate,
-                        lexical_relevance(
-                            query, f"{candidate.title} {candidate.normalized_text}"
-                        ),
+                        lexical_relevance(query, f"{candidate.title} {candidate.normalized_text}"),
                     )
                     for candidate in candidates
                 ),
@@ -104,9 +102,7 @@ class LocalCorpusResearchProvider:
             )
             relevant = [candidate for candidate, relevance in scored if relevance >= 0.30]
             independent = await filter_independent_articles(session, article.id, relevant)
-            independent = filter_independent_publishers(
-                article, independent, self._trust_policy
-            )
+            independent = filter_independent_publishers(article, independent, self._trust_policy)
             relevance_by_id = {candidate.id: relevance for candidate, relevance in scored}
 
         findings = [

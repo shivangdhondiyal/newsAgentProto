@@ -16,9 +16,13 @@ def test_search_keywords_prefers_named_entities() -> None:
 
 
 def test_search_keywords_keeps_concrete_nouns() -> None:
-    assert search_keywords(
-        "Fresh protests across France as unions call for a general strike."
-    ) == ["france", "protests", "unions", "general", "strike"]
+    assert search_keywords("Fresh protests across France as unions call for a general strike.") == [
+        "france",
+        "protests",
+        "unions",
+        "general",
+        "strike",
+    ]
 
 
 def test_search_keywords_returns_nothing_for_filler() -> None:
@@ -36,8 +40,7 @@ def test_search_keywords_respects_limit() -> None:
 
 def test_proper_nouns_prefers_named_entities() -> None:
     assert proper_nouns(
-        "Here is what is known so far about Lula re-elected in Brazil as "
-        "Bolsonaro rejects results."
+        "Here is what is known so far about Lula re-elected in Brazil as Bolsonaro rejects results."
     ) == ["lula", "brazil", "bolsonaro"]
 
 

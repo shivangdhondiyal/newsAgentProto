@@ -23,6 +23,7 @@ from backend.app.db.models import (
     NarrationChunk,
     NewsScript,
     PublishingRecord,
+    Scene,
     ScenePlan,
     VideoRender,
     VideoVariant,
@@ -131,9 +132,7 @@ class TTSAgent:
         )
         if render is not None:
             approval = await session.scalar(
-                select(ContentApproval).where(
-                    ContentApproval.video_render_id == render.id
-                )
+                select(ContentApproval).where(ContentApproval.video_render_id == render.id)
             )
             if approval is not None and approval.status == "approved":
                 raise ValueError(
@@ -151,9 +150,7 @@ class TTSAgent:
                     "invalidated by re-narration."
                 )
             await session.execute(
-                delete(ContentApproval).where(
-                    ContentApproval.video_render_id == render.id
-                )
+                delete(ContentApproval).where(ContentApproval.video_render_id == render.id)
             )
             await session.execute(
                 delete(VideoVariant).where(VideoVariant.video_render_id == render.id)
@@ -173,7 +170,7 @@ class TTSAgent:
         self, session: AsyncSession, script: NewsScript, scene_plan: ScenePlan
     ) -> list[str]:
         warnings: list[str] = []
-        parts = self._chunk_script(script.full_text)
+        parts = self._chunk_script(await self._narration_text(session, script, scene_plan))
         output_dir = self._settings.tts_output_dir / script.id
         chunk_paths: list[Path] = []
         chunk_metadata = []
@@ -183,9 +180,7 @@ class TTSAgent:
             chunk_paths.append(path)
             chunk_metadata.append(wave_metadata(path))
         raw_path = output_dir / "narration.wav"
-        merged, starts = merge_with_pauses(
-            chunk_paths, [part.pause_ms for part in parts], raw_path
-        )
+        merged, starts = merge_with_pauses(chunk_paths, [part.pause_ms for part in parts], raw_path)
         mastered_path = raw_path
         master: AudioMaster | None = None
         if self._settings.audio_master_enabled:
@@ -216,10 +211,8 @@ class TTSAgent:
                         raw_wav_path=str(raw_path),
                         mastered_wav_path=str(mastered_path),
                         status="completed" if validation.passed else "warning",
-                        duration_seconds=validation.duration_seconds
-                        or merged.duration_seconds,
-                        sample_rate=validation.sample_rate
-                        or self._settings.audio_sample_rate,
+                        duration_seconds=validation.duration_seconds or merged.duration_seconds,
+                        sample_rate=validation.sample_rate or self._settings.audio_sample_rate,
                         channels=validation.channels or self._settings.audio_channels,
                         integrated_lufs=validation.integrated_lufs,
                         true_peak_dbtp=validation.true_peak_dbtp,
@@ -231,9 +224,7 @@ class TTSAgent:
 
         mastered_meta = wave_metadata(mastered_path)
         mp3_path = (
-            await self._export_mp3(mastered_path)
-            if self._settings.tts_generate_mp3
-            else None
+            await self._export_mp3(mastered_path) if self._settings.tts_generate_mp3 else None
         )
         narration = NarrationAudio(
             script_id=script.id,
@@ -266,9 +257,29 @@ class TTSAgent:
             )
         return warnings
 
-    async def _synthesize_with_retry(
-        self, text: str, path: Path, warnings: list[str]
-    ) -> None:
+    async def _narration_text(
+        self, session: AsyncSession, script: NewsScript, scene_plan: ScenePlan
+    ) -> str:
+        """Read the same cleaned copy that the scene plan will show on screen.
+
+        Narrating ``script.full_text`` spoke production boilerplate that the
+        planner had already removed from the scenes, so the voiceover and the
+        captions disagreed with the visuals. The planned scene narration is the
+        single source of truth for both.
+        """
+
+        scenes = (
+            await session.scalars(
+                select(Scene)
+                .where(Scene.scene_plan_id == scene_plan.id)
+                .order_by(Scene.position.asc())
+            )
+        ).all()
+        planned = [" ".join((scene.narration or "").split()) for scene in scenes]
+        text = "\n\n".join(segment for segment in planned if segment)
+        return text or script.full_text
+
+    async def _synthesize_with_retry(self, text: str, path: Path, warnings: list[str]) -> None:
         last_error: Exception | None = None
         for attempt in range(2):
             try:
@@ -312,11 +323,7 @@ class TTSAgent:
         return parts
 
     def _chunk_paragraph(self, paragraph: str) -> list[str]:
-        sentences = [
-            item.strip()
-            for item in re.split(r"(?<=[.!?])\s+", paragraph)
-            if item.strip()
-        ]
+        sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", paragraph) if item.strip()]
         chunks: list[str] = []
         current = ""
         for sentence in sentences:
