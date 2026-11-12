@@ -20,6 +20,32 @@ _META_SENTENCE = re.compile(
 
 _META_PREFIX = re.compile(r"^here is what is known so far about\s+", re.IGNORECASE)
 
+# Splitting on every period breaks "brokered by U.S. first lady" into two
+# fragments and reads as two unrelated sentences. Common abbreviations and
+# initials keep their sentence together.
+_SENTENCE_SPLIT = re.compile(
+    r"(?<!\bU\.S)(?<!\bU\.K)(?<!\bU\.N)(?<!\bMr)(?<!\bMrs)(?<!\bMs)"
+    r"(?<!\bDr)(?<!\bProf)(?<!\bSt)(?<!\bJr)(?<!\bSr)"
+    r"(?<!\ba\.m)(?<!\bp\.m)(?<![A-Z]\.)(?<=[.!?])\s+"
+)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split prose into sentences without breaking on common abbreviations."""
+
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return []
+    return [part.strip() for part in _SENTENCE_SPLIT.split(cleaned) if part.strip()]
+
+# Wire copy often opens with a dateline ("MYKOLAIV, Ukraine — "). It is a
+# production artefact, not something a presenter says or a viewer needs burned
+# into the caption, so it is removed from spoken and displayed copy.
+_DATELINE = re.compile(
+    r"^(?:[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3}),\s*"
+    r"(?:[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3})\s*[—–-]{1,2}\s+"
+)
+
 # Scraped pages sometimes carry player/consent furniture into the extracted
 # text. It is not part of the story and must never reach a headline, the
 # narration, or genre detection (a "video player" is not a sports signal).
@@ -28,6 +54,44 @@ _SITE_BOILERPLATE = re.compile(
     r"to watch this content|enable javascript|cookie settings|sign up for)",
     re.IGNORECASE,
 )
+
+# Scraped pages also carry publication labels and podcast/credit blocks:
+# "Published <lead>", "Episode details Available for over a year <lead>",
+# "Presenter: … Producer: … (Image: …) Programme Website". None of that is
+# story content, so it is removed before sentences become key facts.
+_LEAD_LABEL = re.compile(
+    r"^(?:published|updated|episode details|available for over a year|"
+    r"image source|image caption)\b[\s:–—-]*",
+    re.IGNORECASE,
+)
+_IMAGE_TAIL = re.compile(r"\((?:image|photo|credit)\b.*$", re.IGNORECASE)
+_CREDIT_TAIL = re.compile(
+    r"\b(?:presenter|producer|reporter|editor|credits?)\s*:.*$",
+    re.IGNORECASE,
+)
+_PROGRAMME_TAIL = re.compile(r"\bprogramme website\b.*$", re.IGNORECASE)
+
+
+def strip_article_furniture(text: str) -> str:
+    """Remove page furniture that survives article extraction.
+
+    Labels and credit blocks are stripped repeatedly because they can stack
+    ("Episode details Available for over a year …"). The remainder is returned
+    with collapsed whitespace so sentence splitting sees clean prose.
+    """
+
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return ""
+    cleaned = _IMAGE_TAIL.sub("", cleaned)
+    cleaned = _CREDIT_TAIL.sub("", cleaned)
+    cleaned = _PROGRAMME_TAIL.sub("", cleaned)
+    for _ in range(4):
+        stripped = _LEAD_LABEL.sub("", cleaned).strip()
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    return cleaned.strip(" ,;:-–—")
 
 
 def strip_meta_sentences(text: str) -> str:
@@ -39,14 +103,31 @@ def strip_meta_sentences(text: str) -> str:
     here without touching the narration that is actually spoken.
     """
 
-    cleaned = " ".join((text or "").split())
+    cleaned = strip_article_furniture(text)
     if not cleaned:
         return ""
     cleaned = _META_PREFIX.sub("", cleaned)
-    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    sentences = split_sentences(cleaned)
     kept = [sentence for sentence in sentences if sentence and not _META_SENTENCE.match(sentence)]
     kept = [sentence for sentence in kept if not _SITE_BOILERPLATE.search(sentence)]
     return " ".join(kept).strip()
+
+
+def strip_dateline(text: str) -> str:
+    """Drop a leading wire-service dateline such as ``MYKOLAIV, Ukraine —``."""
+
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return ""
+    match = _DATELINE.match(cleaned)
+    if not match:
+        return cleaned
+    remainder = cleaned[match.end() :].lstrip()
+    # Only remove it when a real sentence follows; otherwise the "dateline" may
+    # be the only content and dropping it would leave an empty scene.
+    if len(remainder) < 24:
+        return cleaned
+    return remainder[0].upper() + remainder[1:]
 
 
 def strip_leading_headline(text: str, headline: str) -> str:

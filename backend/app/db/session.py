@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import event, inspect, select, text
@@ -21,6 +22,22 @@ STALE_RUN_MESSAGE = (
     "The application stopped before this run completed. The run was marked failed "
     "during startup reconciliation; retry the stage when the service is available."
 )
+
+STALE_RUN_SWEPT_MESSAGE = (
+    "This run stopped updating its audit row (for example after a database lock) "
+    "and is no longer executing in this process. It was marked failed by the "
+    "stale-run sweeper; retry the stage."
+)
+
+# One token per application process. Audit rows are stamped at insert time so the
+# sweeper can tell its own abandoned rows from a run another process still owns.
+PROCESS_TOKEN = uuid.uuid4().hex
+
+
+@event.listens_for(AgentRun, "before_insert")
+def _stamp_run_owner(_mapper, _connection, target: AgentRun) -> None:
+    if not target.owner_token:
+        target.owner_token = PROCESS_TOKEN
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -61,6 +78,9 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 # ``create_all`` creates missing tables but never adds columns to an existing
 # table, so new production fields are applied explicitly and idempotently.
 ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "agent_runs": {
+        "owner_token": "VARCHAR(64)",
+    },
     "production_jobs": {
         "genre_key": "VARCHAR(60) DEFAULT 'general_news'",
         "genre_profile_json": "JSON DEFAULT '{}'",
@@ -103,20 +123,44 @@ async def reconcile_stale_agent_runs(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     reason: str = STALE_RUN_MESSAGE,
+    min_age_seconds: float = 0.0,
+    exclude_agents: set[str] | None = None,
+    own_only: bool = False,
 ) -> int:
     """Fail audit rows left in ``running`` by a previous process.
 
     A stopped server cannot execute the ``finally`` block that closes an agent run,
     so the row would otherwise appear active forever in the dashboard. Reconciliation
     runs once during startup, before the scheduler or any request can start new work.
+
+    ``min_age_seconds`` and ``exclude_agents`` exist for the periodic sweeper: a run
+    whose final audit write failed (a SQLite lock, for example) keeps its ``running``
+    row while the agent itself is idle. The sweeper must never touch a run that the
+    coordinator still holds, hence the exclusion list.
     """
 
     now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=min_age_seconds)
+    skipped = exclude_agents or set()
     async with session_factory() as session:
         runs = list(
             (await session.scalars(select(AgentRun).where(AgentRun.status == "running"))).all()
         )
+        stale: list[AgentRun] = []
         for run in runs:
+            if run.agent_name in skipped:
+                continue
+            if own_only and run.owner_token != PROCESS_TOKEN:
+                # Another process owns this row (or it predates owner tokens).
+                # Only startup reconciliation may close those.
+                continue
+            started_at = run.started_at
+            if started_at is not None and started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=UTC)
+            if started_at is not None and started_at > cutoff:
+                continue
+            stale.append(run)
+        for run in stale:
             started_at = run.started_at
             if started_at is not None and started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=UTC)
@@ -133,9 +177,9 @@ async def reconcile_stale_agent_runs(
                 "interrupted": True,
                 "reconciled_at": now.isoformat(),
             }
-        if runs:
+        if stale:
             await session.commit()
-    return len(runs)
+    return len(stale)
 
 
 async def get_session(

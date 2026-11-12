@@ -58,7 +58,9 @@ GEO_TERMS = {
     "west",
     "world",
 }
-ILLUSTRATIVE_NOTE = "Illustrative locator · verify against reporting"
+# Viewer-facing provenance note. "verify against reporting" was an operator
+# instruction and must never be burned into a published frame.
+ILLUSTRATIVE_NOTE = "Illustrative locator"
 
 
 @dataclass
@@ -127,6 +129,33 @@ def _font(name: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 def _text_size(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int]:
     box = draw.textbbox((0, 0), text, font=font)
     return box[2] - box[0], box[3] - box[1]
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw, text: str, font, max_width: int, *, ellipsis: str = "…"
+) -> str:
+    """Trim text to the measured width of its box instead of a fixed character count.
+
+    A character count assumes a monospaced face; proportional fonts made the stat
+    panel's context line run past the panel edge.
+    """
+
+    cleaned = " ".join((text or "").split())
+    if not cleaned or max_width <= 0:
+        return ""
+    if _text_size(draw, cleaned, font)[0] <= max_width:
+        return cleaned
+    low, high = 0, len(cleaned)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _text_size(draw, cleaned[:mid].rstrip() + ellipsis, font)[0] <= max_width:
+            low = mid
+        else:
+            high = mid - 1
+    trimmed = cleaned[:low].rstrip()
+    if " " in trimmed:
+        trimmed = trimmed.rsplit(" ", 1)[0]
+    return (trimmed + ellipsis) if trimmed else ellipsis
 
 
 def wrap_text(
@@ -331,6 +360,9 @@ def extract_percentages(text: str) -> list[tuple[str, float]]:
 
 
 def extract_figures(text: str) -> list[tuple[str, str]]:
+    # Production sentences ("corroborated by 3 independent sources") describe the
+    # report, not the story, so their numbers must not become story statistics.
+    text = strip_meta_sentences(text or "")
     figures: list[tuple[str, str]] = []
     seen: set[str] = set()
     for match in FIGURE_RE.finditer(text or ""):
@@ -549,8 +581,10 @@ def _headline_for(
             headline = cleaned
             break
     headline = " ".join(headline.split())
-    limit = (layout or preset.landscape).max_headline_chars
-    return _truncate_headline(headline, limit * 2)
+    limit = (layout or preset.landscape).max_headline_chars * (
+        layout or preset.landscape
+    ).max_headline_lines
+    return _truncate_headline(headline, limit)
 
 
 def _caption_repeats_headline(
@@ -666,8 +700,6 @@ def _draw_headline(
     kicker_reserve: int = 0,
 ) -> int:
     headline = _headline_for(visual, preset, layout)
-    if not headline:
-        return margin
     scale = preset.headline_scale * (0.82 if height > width else 1.0)
     kicker_size = max(13, int(height * preset.kicker_scale))
     available = max_width or (width - margin * 2)
@@ -695,6 +727,10 @@ def _draw_headline(
         kicker_size,
         max(80, available - kicker_reserve),
     )
+    # A scene whose only text is production boilerplate has no headline left to
+    # show. Keep the kicker so the frame is labelled rather than an empty card.
+    if not headline:
+        return y
     stroke = 2 if preset.key in {"social", "kinetic_type", "breaking"} else 0
     fill = _rgb(preset.palette.text)
     if on_photo:
@@ -991,6 +1027,7 @@ def _draw_stat_panel(
         figures = [("Reported detail", (visual.keywords or ["Context"])[0])]
     count = min(3, len(figures))
     row_height = (y1 - y0 - margin) / max(1, count)
+    context_width = (x1 - margin // 2) - (x0 + margin // 2)
     for index, (context, value) in enumerate(figures[:count]):
         row_y = y0 + margin // 2 + int(row_height * index) + int((y1 - y0) * 0.09)
         value_font = _font(preset.heading_font, max(20, int(row_height * 0.46)))
@@ -1003,7 +1040,7 @@ def _draw_stat_panel(
         )
         draw.text(
             (x0 + margin // 2, row_y + int(row_height * 0.45)),
-            context[:42],
+            _fit_text(draw, context, label_font, context_width),
             font=label_font,
             fill=_rgb(preset.palette.muted),
         )
@@ -1057,7 +1094,7 @@ def _draw_chart_panel(
         )
         draw.text(
             (chart_left, y),
-            context[:36],
+            _fit_text(draw, context, label_font, chart_right - chart_left),
             font=label_font,
             fill=_rgb(preset.palette.text),
         )

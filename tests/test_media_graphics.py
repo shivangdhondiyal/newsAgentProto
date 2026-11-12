@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from backend.app.media.craft import platform_caption_rules
-from backend.app.media.graphics import SceneVisual, render_scene_frame, wrap_text
+from backend.app.media.graphics import SceneVisual, extract_figures, render_scene_frame, wrap_text
 from backend.app.media.presets import get_preset
 
 
@@ -383,3 +383,69 @@ def test_lower_third_is_skipped_when_captions_will_appear(tmp_path: Path, monkey
         captions_present=False,
     )
     assert calls == ["drawn"]
+
+
+def test_extract_figures_ignores_production_corroboration_counts() -> None:
+    narration = (
+        "This report is based on information corroborated by 3 independent sources. "
+        "Officials said 12 people were rescued and 4 remain missing."
+    )
+
+    figures = extract_figures(narration)
+
+    values = {value for _context, value in figures}
+    assert "3" not in values
+    assert any(value.startswith("12") for value in values)
+    assert "4" in values
+
+
+def test_portrait_headline_budget_keeps_the_whole_sentence() -> None:
+    from backend.app.media.graphics import _headline_for
+
+    preset = get_preset("vox")
+    title = "Local ceasefire brokered by Melania Trump starts in southern Ukraine"
+
+    portrait = _headline_for(
+        _visual(headline=title, subtitle=title, narration=title),
+        preset,
+        preset.portrait,
+    )
+    landscape = _headline_for(
+        _visual(headline=title, subtitle=title, narration=title),
+        preset,
+        preset.landscape,
+    )
+
+    assert portrait == title
+    assert landscape == title
+
+
+def test_meta_only_scene_still_draws_a_kicker(monkeypatch, tmp_path: Path) -> None:
+    from backend.app.media import graphics
+
+    calls: list[str] = []
+    original = graphics._draw_kicker
+
+    def spy(*args, **kwargs):
+        calls.append("drawn")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(graphics, "_draw_kicker", spy)
+    preset = get_preset("broadcast")
+    visual = _visual(
+        headline="",
+        subtitle="This report reflects information available from the cited sources.",
+        narration="This report reflects information available from the cited sources.",
+    )
+
+    result = graphics.render_scene_frame(
+        visual,
+        preset,
+        640,
+        360,
+        tmp_path / "meta-only.jpg",
+        show_caption=False,
+    )
+
+    assert calls == ["drawn"]
+    assert result.headline == ""

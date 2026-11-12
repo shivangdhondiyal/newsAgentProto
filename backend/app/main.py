@@ -34,6 +34,7 @@ from backend.app.api.routes import router
 from backend.app.core.config import get_settings
 from backend.app.core.logging import configure_logging
 from backend.app.db.session import (
+    STALE_RUN_SWEPT_MESSAGE,
     create_engine,
     create_schema,
     create_session_factory,
@@ -75,6 +76,31 @@ def _scheduled_job(
 
     job.__name__ = f"scheduled_{agent_name}"
     return job
+
+
+async def _sweep_stale_runs(
+    coordinator: AgentRunCoordinator,
+    session_factory: Any,
+    agent_names: set[str],
+) -> None:
+    """Close audit rows whose final write was lost while the agent is idle.
+
+    A SQLite lock can make the ``finally`` commit fail, leaving a run row in
+    ``running`` forever even though nothing is executing. The dashboard then shows
+    the stage as interrupted with no way to clear it until a restart. Agents the
+    coordinator still holds are never touched.
+    """
+
+    busy = {name for name in agent_names if coordinator.is_running(name)}
+    reconciled = await reconcile_stale_agent_runs(
+        session_factory,
+        reason=STALE_RUN_SWEPT_MESSAGE,
+        min_age_seconds=120,
+        exclude_agents=busy,
+        own_only=True,
+    )
+    if reconciled:
+        logger.warning("Stale-run sweeper reconciled %s agent run(s)", reconciled)
 
 
 def _build_stages(app: FastAPI) -> list[WorkflowStage]:
@@ -235,6 +261,14 @@ async def lifespan(app: FastAPI):
             id=agent_name.replace("_", "-"),
             replace_existing=True,
         )
+    scheduler.add_job(
+        _sweep_stale_runs,
+        trigger="interval",
+        minutes=1,
+        id="stale-run-sweeper",
+        replace_existing=True,
+        args=[coordinator, session_factory, {name for _enabled, name, *_rest in scheduled}],
+    )
     if scheduler.get_jobs():
         scheduler.start()
     app.state.scheduler = scheduler

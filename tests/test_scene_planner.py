@@ -132,6 +132,74 @@ def test_planner_drops_boilerplate_segments_and_keeps_spoken_copy_clean() -> Non
     assert all("what is known so far" not in segment.lower() for segment in segments)
 
 
+def test_planner_strips_datelines_and_page_furniture() -> None:
+    planner = RuleBasedScenePlanner()
+
+    class _Script:
+        title = "Tech Life"
+        hook = "Here is what is known so far about Tech Life."
+        introduction = "This report is based on information corroborated by 3 sources."
+        main_story = [
+            "Published Episode details Available for over a year "
+            "Independent journalists face fake copyright strikes.",
+            "Presenter: Shiona McCallum Producer: Imran Rahman-Jones "
+            "(Image: A man on a phone. Credit: Getty Images.) Programme Website",
+        ]
+        context = [
+            "MYKOLAIV, Ukraine — A localized ceasefire took effect early Tuesday.",
+        ]
+        closing = "This report reflects information available from the cited sources at this time."
+
+    segments = planner._segments(_Script())
+
+    assert segments == [
+        "Tech Life.",
+        "Independent journalists face fake copyright strikes.",
+        "A localized ceasefire took effect early Tuesday.",
+    ]
+    joined = " ".join(segments).lower()
+    for furniture in ("published", "episode details", "presenter", "programme website"):
+        assert furniture not in joined
+    assert "mykolaiv" not in joined
+
+
+def test_planner_does_not_split_sentences_on_abbreviations() -> None:
+    planner = RuleBasedScenePlanner()
+
+    class _Script:
+        title = "Truce holds"
+        hook = "Truce holds."
+        introduction = ""
+        main_story = [
+            "A mission brokered by U.S. first lady Melania Trump arrived at 3 a.m. on Tuesday.",
+        ]
+        context: list[str] = []
+        closing = ""
+
+    segments = planner._segments(_Script())
+
+    assert segments == [
+        "Truce holds.",
+        "A mission brokered by U.S. first lady Melania Trump arrived at 3 a.m. on Tuesday.",
+    ]
+
+
+def test_planner_deduplicates_a_repeated_headline_question() -> None:
+    planner = RuleBasedScenePlanner()
+
+    class _Script:
+        title = "Who is the suspected spy?"
+        hook = "Here is what is known so far about Who is the suspected spy?."
+        introduction = ""
+        main_story = ["Who is the suspected spy?"]
+        context: list[str] = []
+        closing = ""
+
+    segments = planner._segments(_Script())
+
+    assert segments == ["Who is the suspected spy?"]
+
+
 @pytest.mark.asyncio
 async def test_scene_planner_excludes_scripts_marked_for_review() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")

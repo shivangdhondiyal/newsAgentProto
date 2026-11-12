@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -320,6 +321,151 @@ async def test_video_generator_skips_a_narration_whose_audio_file_is_missing(
     assert renderer.calls == []
     async with sessions() as session:
         assert await session.scalar(select(VideoRender)) is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_video_generator_renders_past_stale_rows_when_the_batch_is_small(
+    tmp_path: Path,
+) -> None:
+    """A dead narration row must not consume the whole batch.
+
+    The candidate query used to apply ``video_batch_size`` before the file check,
+    so three rows whose audio had been deleted starved every renderable story.
+    """
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def add_story(slug: str, created_at: datetime, audio_exists: bool) -> None:
+        async with sessions() as session:
+            article = Article(
+                source_id="bbc-world",
+                source_name="BBC News",
+                url=f"https://bbc.example/{slug}",
+                canonical_url=f"https://bbc.example/{slug}",
+                title=f"Story {slug}",
+                normalized_text="Officials said an earthquake struck the city.",
+            )
+            session.add(article)
+            await session.flush()
+            brief = ResearchBrief(
+                article_id=article.id,
+                status="completed",
+                headline=article.title,
+                key_facts=[],
+                context=[],
+                uncertainties=[],
+                source_count=1,
+                summarizer_name="test",
+            )
+            session.add(brief)
+            await session.flush()
+            script = NewsScript(
+                article_id=article.id,
+                research_brief_id=brief.id,
+                status="draft",
+                title=article.title,
+                hook="Hook.",
+                introduction="Introduction.",
+                main_story=["Main story."],
+                context=[],
+                closing="Closing.",
+                full_text="Full text.",
+                estimated_duration_seconds=10,
+                target_duration_seconds=60,
+                writer_name="test",
+                review_reasons=[],
+            )
+            session.add(script)
+            await session.flush()
+            plan = ScenePlan(
+                script_id=script.id,
+                status="draft",
+                total_duration_seconds=10,
+                planner_name="test",
+            )
+            session.add(plan)
+            await session.flush()
+            session.add(
+                Scene(
+                    scene_plan_id=plan.id,
+                    position=1,
+                    start_seconds=0,
+                    duration_seconds=10,
+                    narration="Officials said an earthquake struck the city.",
+                    subtitle="Officials said an earthquake struck the city.",
+                    keywords=["earthquake", "city"],
+                    scene_description="Neutral map visual.",
+                    stock_footage_query="earthquake city neutral news footage",
+                    image_search_query="earthquake city editorial image",
+                    animation_suggestion="Slow zoom.",
+                    transition="fade",
+                )
+            )
+            audio_path = tmp_path / "audio" / slug / "narration.wav"
+            if audio_exists:
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_path.write_bytes(b"RIFF-test-audio")
+            narration = NarrationAudio(
+                script_id=script.id,
+                scene_plan_id=plan.id,
+                status="completed",
+                provider_name="test",
+                voice_name="test-voice",
+                wav_path=str(audio_path),
+                mp3_path=None,
+                duration_seconds=2.5,
+                sample_rate=16_000,
+                created_at=created_at,
+            )
+            session.add(narration)
+            await session.flush()
+            if audio_exists:
+                session.add_all(
+                    [
+                        NarrationChunk(
+                            narration_audio_id=narration.id,
+                            position=1,
+                            text="Officials said an earthquake struck the city.",
+                            wav_path=str(tmp_path / "chunk-001.wav"),
+                            start_seconds=0.0,
+                            duration_seconds=1.0,
+                        ),
+                        NarrationChunk(
+                            narration_audio_id=narration.id,
+                            position=2,
+                            text="Emergency crews began their response.",
+                            wav_path=str(tmp_path / "chunk-002.wav"),
+                            start_seconds=1.0,
+                            duration_seconds=1.5,
+                        ),
+                    ]
+                )
+            await session.commit()
+
+    now = datetime.now(UTC)
+    await add_story("stale-1", now - timedelta(hours=3), audio_exists=False)
+    await add_story("stale-2", now - timedelta(hours=2), audio_exists=False)
+    await add_story("renderable", now - timedelta(hours=1), audio_exists=True)
+
+    renderer = FakeVideoRenderer()
+    result = await VideoGeneratorAgent(
+        Settings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            video_output_dir=tmp_path / "video",
+            video_batch_size=1,
+        ),
+        sessions,
+        renderer=renderer,
+    ).execute()
+
+    assert result.status == "completed"
+    assert result.items_created == 1
+    assert {call["aspect_ratio"] for call in renderer.calls} == {"16:9", "9:16"}
+    assert sum("no audio file" in warning for warning in result.warnings) == 2
     await engine.dispose()
 
 

@@ -50,6 +50,11 @@ ASPECT_SIZES = {
     "9:16": ("video_portrait_width", "video_portrait_height"),
 }
 
+# Narration rows whose audio file was deleted are skipped at render time, so the
+# candidate query must return more rows than one batch. Otherwise a handful of dead
+# rows at the front of the queue would starve every renderable narration forever.
+CANDIDATE_WINDOW = 200
+
 
 class VideoGeneratorAgent:
     """Renders local draft videos; it has no publishing authority."""
@@ -94,7 +99,11 @@ class VideoGeneratorAgent:
             try:
                 candidates = await self._load_eligible_narrations(session, narration_id)
                 run.items_seen = len(candidates)
+                batch_size = self._settings.video_batch_size
+                rendered = 0
                 for narration, scene_plan in candidates:
+                    if rendered >= batch_size:
+                        break
                     if not Path(narration.wav_path).is_file():
                         if narration_id:
                             raise FileNotFoundError(
@@ -123,6 +132,7 @@ class VideoGeneratorAgent:
                         audio_path=audio_path,
                     )
                     run.items_created += 1
+                    rendered += 1
                     if warnings:
                         run.warnings = [*run.warnings, *warnings]
                 run.status = "completed"
@@ -151,7 +161,7 @@ class VideoGeneratorAgent:
                 NewsScript.status == "draft",
             )
             .order_by(NarrationAudio.created_at.asc())
-            .limit(self._settings.video_batch_size)
+            .limit(CANDIDATE_WINDOW)
         )
         if narration_id:
             statement = statement.where(NarrationAudio.id == narration_id)
@@ -751,7 +761,12 @@ class VideoGeneratorAgent:
             subtitle=scene.subtitle,
             headline=headline_for_text(
                 scene.subtitle or scene.narration or "",
-                max(preset.landscape.max_headline_chars, preset.portrait.max_headline_chars * 2),
+                max(
+                    preset.landscape.max_headline_chars
+                    * preset.landscape.max_headline_lines,
+                    preset.portrait.max_headline_chars
+                    * preset.portrait.max_headline_lines,
+                ),
             ),
             keywords=list(
                 search_keywords(scene.narration or scene.subtitle or "") or scene.keywords or []

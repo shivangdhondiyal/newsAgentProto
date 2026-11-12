@@ -56,6 +56,10 @@ class LayoutRules:
     graphic_position: str = "right"
     image_fit: str = "cover"
     max_headline_chars: int = 46
+    # A headline is budgeted per line. Portrait frames carry the headline in a
+    # taller block, so they can hold more lines than a landscape frame; using the
+    # same two-line budget cut "…starts in southern Ukraine" to "…starts".
+    max_headline_lines: int = 2
 
 
 @dataclass(frozen=True)
@@ -180,6 +184,7 @@ def _portrait(
         graphic_position=graphic_position,
         image_fit=image_fit,
         max_headline_chars=max_chars,
+        max_headline_lines=4,
     )
 
 

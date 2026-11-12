@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import re
-
 from backend.app.agents.research.contracts import ResearchSourceCandidate, ResearchSummary
 from backend.app.db.models import Article
+from backend.app.media.script_text import split_sentences, strip_article_furniture
 
 
 class ExtractiveResearchSummarizer:
@@ -14,7 +13,8 @@ class ExtractiveResearchSummarizer:
     def summarize(
         self, article: Article, sources: list[ResearchSourceCandidate]
     ) -> ResearchSummary:
-        sentences = re.split(r"(?<=[.!?])\s+", article.normalized_text)
+        cleaned_text = strip_article_furniture(article.normalized_text)
+        sentences = split_sentences(cleaned_text)
         key_facts = self._unique(
             [sentence.strip() for sentence in sentences if sentence.strip()], 4
         )

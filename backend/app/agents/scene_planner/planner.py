@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import re
+
 from backend.app.agents.scene_planner.contracts import PlannedScene
 from backend.app.db.models import NewsScript
 from backend.app.media.keywords import search_keywords
-from backend.app.media.script_text import strip_leading_headline, strip_meta_sentences
+from backend.app.media.script_text import (
+    strip_dateline,
+    strip_leading_headline,
+    strip_meta_sentences,
+)
 
 
 class RuleBasedScenePlanner:
@@ -32,16 +38,26 @@ class RuleBasedScenePlanner:
         # before narration is generated. A segment that is only boilerplate is
         # dropped instead of being narrated to the viewer.
         segments: list[str] = []
+        seen: set[str] = set()
         for group in groups:
             if not group or not group.strip():
                 continue
             cleaned = strip_meta_sentences(group)
             cleaned = strip_leading_headline(cleaned, title)
-            if cleaned:
+            cleaned = strip_dateline(cleaned)
+            cleaned = self._tidy_punctuation(cleaned)
+            key = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
+            if cleaned and key and key not in seen:
+                seen.add(key)
                 segments.append(cleaned)
         if not segments and title:
-            segments = [title]
+            segments = [self._tidy_punctuation(title)]
         return segments
+
+    @staticmethod
+    def _tidy_punctuation(text: str) -> str:
+        cleaned = re.sub(r"\.{2,}", ".", (text or "").strip())
+        return re.sub(r"([?.!])\.+$", r"\1", cleaned)
 
     def _make_scene(
         self, narration: str, position: int, *, fallback_display: str = ""
@@ -50,6 +66,7 @@ class RuleBasedScenePlanner:
         # raw script text directly. A segment that is *only* boilerplate falls
         # back to the story headline instead of a blank card.
         display = strip_meta_sentences(narration) or fallback_display or narration
+        display = self._tidy_punctuation(strip_dateline(display))
         keywords = self._keywords(display)
         query = " ".join(keywords) or "news context"
         if position == 1:

@@ -157,6 +157,69 @@ async def test_startup_reconciliation_fails_interrupted_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sweeper_only_closes_idle_runs_past_the_grace_window() -> None:
+    settings = Settings(database_url="sqlite+aiosqlite:///:memory:")
+    engine = create_engine(settings)
+    await create_schema(engine)
+    sessions = create_session_factory(engine)
+
+    now = datetime.now(UTC)
+    async with sessions() as session:
+        session.add(
+            AgentRun(
+                agent_name="video_generator",
+                status="running",
+                started_at=now - timedelta(minutes=20),
+            )
+        )
+        session.add(
+            AgentRun(
+                agent_name="news_collector",
+                status="running",
+                started_at=now - timedelta(minutes=20),
+            )
+        )
+        session.add(
+            AgentRun(
+                agent_name="credibility",
+                status="running",
+                started_at=now - timedelta(seconds=5),
+            )
+        )
+        session.add(
+            AgentRun(
+                agent_name="publishing",
+                status="running",
+                started_at=now - timedelta(minutes=20),
+                owner_token="another-process",
+            )
+        )
+        await session.commit()
+
+    reconciled = await reconcile_stale_agent_runs(
+        sessions,
+        min_age_seconds=120,
+        exclude_agents={"news_collector"},
+        own_only=True,
+    )
+    assert reconciled == 1
+
+    async with sessions() as session:
+        runs = {run.agent_name: run for run in (await session.scalars(select(AgentRun))).all()}
+
+    assert runs["video_generator"].status == "failed"
+    assert runs["video_generator"].details["interrupted"] is True
+    # A run the coordinator still holds is never closed by the sweeper.
+    assert runs["news_collector"].status == "running"
+    # A run inside the grace window is left alone so a slow final commit can land.
+    assert runs["credibility"].status == "running"
+    # A run owned by another process is that process's to close, not ours.
+    assert runs["publishing"].status == "running"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_overview_uses_real_counts_and_pipeline_stages(tmp_path: Path) -> None:
     seeded = await seed_content(tmp_path)
     app = FastAPI()

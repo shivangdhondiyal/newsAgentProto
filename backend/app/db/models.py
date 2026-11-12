@@ -68,6 +68,10 @@ class AgentRun(Base):
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
     errors: Mapped[list[str]] = mapped_column(JSON, default=list)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Identifies the process that created the row. A stale-run sweeper may only
+    # close rows it owns, so a second process (or a listener that died while its
+    # work continued) can never mark another process's live run as failed.
+    owner_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ArticleEmbedding(Base):
