@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     tts_noise_scale: float = Field(default=0.667, ge=0.0, le=1.5)
     tts_noise_w: float = Field(default=0.8, ge=0.0, le=1.5)
     tts_sentence_silence: float = Field(default=0.22, ge=0.0, le=2.0)
+    tts_kokoro_model_path: Path = Path("models/kokoro/kokoro-v1.0.onnx")
+    tts_kokoro_voices_path: Path = Path("models/kokoro/voices-v1.0.bin")
+    tts_kokoro_voice: str = "am_michael"
+    tts_kokoro_speed: float = Field(default=1.05, ge=0.5, le=2.0)
+    tts_kokoro_auto_download: bool = False
     audio_master_enabled: bool = True
     audio_target_lufs: float = Field(default=-16.0, ge=-30.0, le=-8.0)
     audio_true_peak_db: float = Field(default=-1.5, ge=-6.0, le=0.0)

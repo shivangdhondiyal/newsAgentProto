@@ -24,6 +24,11 @@ from backend.app.media.audio import (
     probe_audio,
     validate_audio,
 )
+from backend.app.media.voice_catalog import (
+    KOKORO_VOICES,
+    kokoro_package_available,
+    kokoro_paths,
+)
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 SILENCE_JSON = re.compile(r"silence_(start|end):\s*([0-9.]+)")
@@ -179,6 +184,24 @@ def list_voices(settings: Any) -> list[dict[str, Any]]:
                 ),
             )
         )
+    if kokoro_package_available():
+        model_path, voices_path = kokoro_paths(settings)
+        kokoro_installed = model_path.is_file() and voices_path.is_file()
+        for key, voice in KOKORO_VOICES.items():
+            options.append(
+                VoiceOption(
+                    key=key,
+                    name=voice.name,
+                    language=voice.language,
+                    provider="kokoro",
+                    model_path=str(model_path),
+                    available=kokoro_installed,
+                    description=(
+                        "Local Kokoro-82M narration voice (Apache-2.0), 24 kHz mono. "
+                        f"{voice.description}."
+                    ),
+                )
+            )
     if not options:
         options.append(
             VoiceOption(
@@ -188,7 +211,10 @@ def list_voices(settings: Any) -> list[dict[str, Any]]:
                 provider="piper",
                 model_path=str(configured),
                 available=False,
-                description="Install a Piper .onnx voice model to enable narration.",
+                description=(
+                    "Install a Piper .onnx voice model (or the Kokoro models) "
+                    "to enable narration."
+                ),
             )
         )
     return [option.to_public_dict() for option in options]
@@ -212,12 +238,40 @@ async def synthesize_voice_preview(
     voice_key: str | None = None,
     delivery: VoiceDelivery | None = None,
 ) -> Path:
-    """Generate a short real preview with the configured local voice."""
+    """Generate a short real preview with the configured local voice.
+
+    Routes to the Kokoro provider when the selected voice is a Kokoro voice,
+    otherwise falls back to the Piper CLI.
+    """
 
     text = " ".join((text or "").split())
     if not text:
         raise ValueError("Preview text is required")
     text = text[:240]
+    delivery = delivery or VoiceDelivery()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if voice_key and voice_key in KOKORO_VOICES:
+        model_path, voices_path = kokoro_paths(settings)
+        if not (model_path.is_file() and voices_path.is_file()):
+            raise FileNotFoundError(
+                f"Kokoro model files are not installed at {model_path} and "
+                f"{voices_path}. Download them once before previewing a Kokoro voice."
+            )
+        from backend.app.agents.tts.providers import KokoroSpeechSynthesizer
+
+        synthesizer = KokoroSpeechSynthesizer(
+            model_path,
+            voices_path,
+            voice=voice_key,
+            speed=delivery.rate,
+            auto_download=False,
+        )
+        await synthesizer.synthesize(text, output_path)
+        if not output_path.is_file():
+            raise RuntimeError("Kokoro preview failed to produce a WAV file")
+        return output_path
+
     model = Path(settings.tts_piper_voice_model)
     if voice_key:
         candidate = Path("models/piper") / f"{voice_key}.onnx"
@@ -234,8 +288,6 @@ async def synthesize_voice_preview(
             f"Piper executable not found: {executable}. Install Piper or update "
             "NEWS_TTS_PIPER_EXECUTABLE."
         )
-    delivery = delivery or VoiceDelivery()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     process = await asyncio.create_subprocess_exec(
         resolved,
         "--model",

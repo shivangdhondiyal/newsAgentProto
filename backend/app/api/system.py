@@ -98,11 +98,30 @@ async def _journal(session: AsyncSession) -> dict[str, int]:
 
 
 def _capabilities(settings) -> dict[str, bool]:
+    kokoro_ready = (
+        importlib.util.find_spec("kokoro_onnx") is not None
+        and importlib.util.find_spec("onnxruntime") is not None
+        and Path(settings.tts_kokoro_model_path).is_file()
+        and Path(settings.tts_kokoro_voices_path).is_file()
+    )
+    piper_ready = (
+        _command_available(settings.tts_piper_executable)
+        and Path(settings.tts_piper_voice_model).is_file()
+    )
+    tts_provider = settings.tts_provider
     return {
         "video_ffmpeg": _command_available(settings.video_ffmpeg_executable),
         "tts_ffmpeg": _command_available(settings.tts_ffmpeg_executable),
-        "piper_tts": _command_available(settings.tts_piper_executable)
-        and Path(settings.tts_piper_voice_model).is_file(),
+        (
+            "kokoro_tts"
+            if tts_provider == "kokoro"
+            else "piper_tts"
+        ): (
+            settings.tts_enabled
+            and (
+                kokoro_ready if tts_provider == "kokoro" else piper_ready
+            )
+        ),
         "local_embeddings": importlib.util.find_spec("sentence_transformers") is not None,
         "local_publishing": True,
         "youtube_publishing": all(

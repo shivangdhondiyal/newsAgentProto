@@ -254,7 +254,7 @@ class _FakeTTS:
         self.wav_path = wav_path
         self.calls: list[bool] = []
 
-    async def execute(self, *, script_ids=None, force: bool = False):
+    async def execute(self, *, script_ids=None, force: bool = False, **kwargs):
         self.calls.append(force)
         self.wav_path.parent.mkdir(parents=True, exist_ok=True)
         self.wav_path.write_bytes(b"RIFF")

@@ -17,6 +17,7 @@ from backend.app.media.audio_production import (
     voice_delivery_for,
 )
 from backend.app.media.genres import build_effective_profile
+from backend.app.media.voice_catalog import KOKORO_VOICES, kokoro_language
 
 
 def test_voice_catalog_reports_the_installed_local_voice() -> None:
@@ -25,6 +26,18 @@ def test_voice_catalog_reports_the_installed_local_voice() -> None:
     assert voices
     assert any(voice["provider"] == "piper" for voice in voices)
     assert all("available" in voice for voice in voices)
+
+
+def test_voice_catalog_includes_kokoro_voices() -> None:
+    settings = Settings()
+    voices = list_voices(settings)
+    kokoro = [voice for voice in voices if voice["provider"] == "kokoro"]
+    assert kokoro, "Kokoro voices should be listed when kokoro-onnx is installed"
+    keys = {voice["key"] for voice in kokoro}
+    assert keys == set(KOKORO_VOICES)
+    for voice in kokoro:
+        assert voice["language"] == kokoro_language(voice["key"])
+        assert voice["model_path"].endswith("kokoro-v1.0.onnx")
 
 
 def test_genre_delivery_changes_pace_and_pauses() -> None:

@@ -59,6 +59,10 @@ from backend.app.media.motion import (
 )
 from backend.app.media.presets import PRESETS, list_presets
 from backend.app.media.transcription import transcription_status
+from backend.app.media.voice_catalog import (
+    kokoro_models_present,
+    kokoro_package_available,
+)
 from backend.app.reviews.quality import evaluate_video_quality
 from backend.app.schemas.production import ProductionJobCreate
 from backend.app.services.run_control import AgentRunCoordinator
@@ -903,7 +907,11 @@ class ProductionService:
             script_id = job.script_id
         await self._coordinator.run(
             "tts",
-            lambda: self._tts_agent.execute(script_ids=[script_id], force=force),
+            lambda: self._tts_agent.execute(
+                script_ids=[script_id],
+                force=force,
+                voice=(job.config_json or {}).get("voice"),
+            ),
             wait_if_busy=True,
             label="Narrate",
         )
@@ -1856,6 +1864,14 @@ def build_config(settings: Settings) -> dict[str, Any]:
     ffmpeg = resolve_executable(settings.video_ffmpeg_executable)
     piper = resolve_executable(settings.tts_piper_executable)
     piper_ready = bool(piper and settings.tts_piper_voice_model.is_file())
+    kokoro_ready = kokoro_package_available() and kokoro_models_present(settings)
+    tts_ready = (
+        kokoro_ready if settings.tts_provider == "kokoro" else piper_ready
+    )
+    if settings.tts_provider == "kokoro":
+        voice_name = settings.tts_kokoro_voice
+    else:
+        voice_name = settings.tts_piper_voice_model.stem
     providers = [
         name.strip() for name in settings.asset_provider_priority.split(",") if name.strip()
     ]
@@ -1889,9 +1905,12 @@ def build_config(settings: Settings) -> dict[str, Any]:
         "styles": styles,
         "asset_providers": providers,
         "asset_strategy": settings.asset_strategy_default,
-        "voice_name": settings.tts_piper_voice_model.stem,
+        "voice_name": voice_name,
+        "tts_provider": settings.tts_provider,
         "ffmpeg_available": ffmpeg is not None,
         "piper_available": piper_ready,
+        "kokoro_available": kokoro_ready,
+        "tts_ready": tts_ready,
         "captions_available": settings.video_captions_enabled,
         "caption_presets": list_caption_presets(),
         "caption_defaults": {
@@ -1936,7 +1955,9 @@ def load_defaults(settings: Settings) -> dict[str, Any]:
         "aspect_ratio": "both",
         "captions": settings.video_captions_enabled,
         "asset_strategy": settings.asset_strategy_default,
-        "voice": settings.tts_piper_voice_model.stem,
+        "voice": settings.tts_kokoro_voice
+        if settings.tts_provider == "kokoro"
+        else settings.tts_piper_voice_model.stem,
         "destination": "local",
     }
     path = settings.production_defaults_file

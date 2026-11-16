@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.agents.errors import AgentRunFailed
 from backend.app.agents.tts.audio import merge_with_pauses, wave_metadata
 from backend.app.agents.tts.contracts import SpeechSynthesizer
-from backend.app.agents.tts.providers import PiperSpeechSynthesizer
+from backend.app.agents.tts.providers import (
+    KokoroSpeechSynthesizer,
+    PiperSpeechSynthesizer,
+)
 from backend.app.core.config import Settings
 from backend.app.db.models import (
     AgentRun,
@@ -59,6 +62,7 @@ class TTSAgent:
         *,
         script_ids: list[str] | None = None,
         force: bool = False,
+        voice: str | None = None,
     ) -> TTSRunRead:
         started_at = datetime.now(UTC)
         started_clock = perf_counter()
@@ -72,7 +76,9 @@ class TTSAgent:
                 for script, scene_plan in candidates:
                     if force:
                         await self._clear_narration(session, script.id)
-                    warnings = await self._create_narration(session, script, scene_plan)
+                    warnings = await self._create_narration(
+                        session, script, scene_plan, voice=voice
+                    )
                     run.items_created += 1
                     if warnings:
                         run.warnings = [*run.warnings, *warnings]
@@ -167,16 +173,22 @@ class TTSAgent:
         await session.flush()
 
     async def _create_narration(
-        self, session: AsyncSession, script: NewsScript, scene_plan: ScenePlan
+        self,
+        session: AsyncSession,
+        script: NewsScript,
+        scene_plan: ScenePlan,
+        *,
+        voice: str | None = None,
     ) -> list[str]:
         warnings: list[str] = []
+        synthesizer = self._synthesizer_for(voice)
         parts = self._chunk_script(await self._narration_text(session, script, scene_plan))
         output_dir = self._settings.tts_output_dir / script.id
         chunk_paths: list[Path] = []
         chunk_metadata = []
         for position, part in enumerate(parts, start=1):
             path = output_dir / f"chunk-{position:03d}.wav"
-            await self._synthesize_with_retry(part.text, path, warnings)
+            await self._synthesize_with_retry(synthesizer, part.text, path, warnings)
             chunk_paths.append(path)
             chunk_metadata.append(wave_metadata(path))
         raw_path = output_dir / "narration.wav"
@@ -230,8 +242,8 @@ class TTSAgent:
             script_id=script.id,
             scene_plan_id=scene_plan.id,
             status="completed",
-            provider_name=self._synthesizer.name,
-            voice_name=self._synthesizer.voice_name,
+            provider_name=synthesizer.name,
+            voice_name=synthesizer.voice_name,
             wav_path=str(mastered_path),
             mp3_path=str(mp3_path) if mp3_path else None,
             duration_seconds=round(mastered_meta.duration_seconds, 3),
@@ -279,11 +291,13 @@ class TTSAgent:
         text = "\n\n".join(segment for segment in planned if segment)
         return text or script.full_text
 
-    async def _synthesize_with_retry(self, text: str, path: Path, warnings: list[str]) -> None:
+    async def _synthesize_with_retry(
+        self, synthesizer: SpeechSynthesizer, text: str, path: Path, warnings: list[str]
+    ) -> None:
         last_error: Exception | None = None
         for attempt in range(2):
             try:
-                await self._synthesizer.synthesize(text, path)
+                await synthesizer.synthesize(text, path)
                 return
             except (RuntimeError, OSError) as exc:
                 last_error = exc
@@ -379,14 +393,32 @@ class TTSAgent:
         return mp3_path
 
     @staticmethod
-    def _create_synthesizer(settings: Settings) -> SpeechSynthesizer:
-        if settings.tts_provider == "piper":
+    def _create_synthesizer(settings: Settings, voice: str | None = None) -> SpeechSynthesizer:
+        provider = settings.tts_provider
+        if provider == "kokoro":
+            return KokoroSpeechSynthesizer(
+                settings.tts_kokoro_model_path,
+                settings.tts_kokoro_voices_path,
+                voice=voice or settings.tts_kokoro_voice,
+                speed=settings.tts_kokoro_speed,
+                auto_download=settings.tts_kokoro_auto_download,
+            )
+        if provider == "piper":
+            if voice:
+                model = Path("models/piper") / f"{voice}.onnx"
+            else:
+                model = settings.tts_piper_voice_model
             return PiperSpeechSynthesizer(
                 settings.tts_piper_executable,
-                settings.tts_piper_voice_model,
+                model,
                 length_scale=settings.tts_length_scale,
                 noise_scale=settings.tts_noise_scale,
                 noise_w=settings.tts_noise_w,
                 sentence_silence=settings.tts_sentence_silence,
             )
-        raise ValueError("Unsupported TTS provider; use 'piper'")
+        raise ValueError(f"Unsupported TTS provider: {provider!r}; use 'piper' or 'kokoro'")
+
+    def _synthesizer_for(self, voice: str | None) -> SpeechSynthesizer:
+        if voice is None:
+            return self._synthesizer
+        return self._create_synthesizer(self._settings, voice)
